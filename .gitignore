@@ -1,0 +1,45 @@
+# ── Node ───────────────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── Secrets & env ──────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+dist/
+*.egg-info/
+
+# ── Build artefacts ────────────────────────────────────────────────────────────
+/rekart-shopify-remix/rekart-delivery/build/
+/rekart-shopify-remix/rekart-delivery/public/build/
+/rekart-shopify-remix/rekart-delivery/.cache/
+
+# ── Prisma / SQLite ────────────────────────────────────────────────────────────
+*.sqlite
+*.sqlite-journal
+.prisma/
+
+# ── Shopify CLI ────────────────────────────────────────────────────────────────
+.shopify/
+.shopify.lock
+shopify-dev.log
+
+# ── Vite ───────────────────────────────────────────────────────────────────────
+.vite/
+
+# ── React Router generated types ───────────────────────────────────────────────
+.react-router/
+
+# ── OS ─────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

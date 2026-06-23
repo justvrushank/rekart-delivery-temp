@@ -1,0 +1,57 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "954401100dd738ee168c9ebb21ae2e89"
+name = "Rekart Delivery"
+# Set this to your deployed app URL (the value of SHOPIFY_APP_URL in .env).
+# TOML cannot read env vars, so fill it in manually for non-dev deploys.
+# During `shopify app dev` the CLI overwrites this with the tunnel URL because
+# automatically_update_urls_on_dev = true (see [build] below).
+application_url = "https://example.com"
+embedded = true
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_orders,write_orders,read_customers,read_products,write_products,write_fulfillments,read_fulfillments"
+optional_scopes = [ ]
+use_legacy_install_flow = false
+
+[webhooks]
+api_version = "2025-10"
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = [ "app/uninstalled" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/scopes_update"
+  topics = [ "app/scopes_update" ]
+
+  # Mandatory GDPR / privacy compliance webhooks. These use `compliance_topics`
+  # (not `topics`). Handled in the Remix app; actual data redaction is forwarded
+  # to the Rekart FastAPI backend.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/data_request"
+  compliance_topics = [ "customers/data_request" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/redact"
+  compliance_topics = [ "customers/redact" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/shop/redact"
+  compliance_topics = [ "shop/redact" ]
+
+# NOTE: The data webhooks that feed Rekart (orders/create, customers/create,
+# customers/update) are NOT declared here. They are registered per-shop at
+# install time (see app/shopify.server.ts -> hooks.afterAuth) so they can be
+# delivered directly to the env-specific Rekart FastAPI backend URL.
+
+[auth]
+# OAuth callback allow-list. Must exactly match the deployed app URL +
+# /auth/callback (i.e. https://<SHOPIFY_APP_URL>/auth/callback). Update this to
+# the real host before deploying; `shopify app dev` keeps it in sync with the
+# tunnel URL automatically.
+redirect_urls = [ "https://example.com/auth/callback" ]
+
+[build]
+automatically_update_urls_on_dev = true

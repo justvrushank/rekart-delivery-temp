@@ -1,0 +1,24 @@
+# Learn more about configuring extensions at https://shopify.dev/docs/api/checkout-ui-extensions/configuration
+api_version = "2025-07"
+
+[[extensions]]
+type = "ui_extension"
+name = "Rekart Checkout"
+handle = "rekart-checkout"
+uid = "da4396c3-664c-03bb-106d-a8e51dc5e434c2ba43b3"
+
+  # Static target: mounts once, automatically, with no merchant placement in the
+  # checkout editor (unlike block.render). No visible UI — the component only
+  # writes the `rekart_product_id` line item property in the background.
+  [[extensions.targeting]]
+  module = "./src/Checkout.tsx"
+  target = "purchase.checkout.actions.render-before"
+
+  # Required to read app-owned metafields and to apply cart line changes.
+  [extensions.capabilities]
+  api_access = true
+
+  # Expose the `rekart.product_id` variant metafield to `useAppMetafields()`.
+  [[extensions.metafields]]
+  namespace = "rekart"
+  key = "product_id"

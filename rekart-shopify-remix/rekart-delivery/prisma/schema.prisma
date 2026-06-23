@@ -1,0 +1,185 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  // TODO: restore mysql provider and @db.Text before production deploy
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+
+  @@index([shop])
+}
+
+// Onboarding qualification answers + Rekart connection state, one row per shop.
+model ShopOnboarding {
+  shop             String   @id
+  businessCategory String?
+  country          String?
+  orderVolume      String?
+  subscriberCount  String?
+  // Delivery operations setup, e.g. "own_fleet", "third_party", "none".
+  deliveryOps      String?
+  completed        Boolean  @default(false)
+  // Whether this shop has been linked to the Rekart backend.
+  connected        Boolean  @default(false)
+  // Whether the merchant says they already use Rekart (Yes/No fork on the first
+  // onboarding step). Drives the post-onboarding gate: existing users link an
+  // account (connect-rekart); new users land on pending-setup. Null until asked.
+  existingRekartUser Boolean?
+  // Rekart account link (set on the connect-rekart screen). rekartMerchantId is
+  // the Rekart client_id; rekartAccessToken is the JWT issued at login.
+  rekartMerchantId   String?
+  // Encrypted (AES-256-GCM) JWT — well over MySQL's default VARCHAR(191); needs TEXT.
+  rekartAccessToken  String?
+  // Set when the Rekart backend rejects the stored token (401); drives the
+  // "reconnect" banner. Cleared once the token works again.
+  tokenInvalid       Boolean  @default(false)
+  // Default Rekart delivery slot every synced Shopify order is assigned to.
+  // Without it, order sync fails with SLOT_NOT_FOUND (Phase 3 blocker).
+  defaultSlotId      Int?
+  // Expiry of the stored Rekart access token (from login response). Drives the
+  // "expires soon" / expired handling on the dashboard.
+  rekartTokenExpiresAt DateTime?
+  // CSRF state for the planned Rekart OAuth 2.0 authorization-code flow.
+  rekartOAuthState   String?
+  // NOTE: when reverting SQLite hack, keep this field and restore @db.Text on long fields
+  rekartCacheId String? // cache_id from Rekart catalog API — only changes when admin updates catalog
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+// One outbound delivery-status push from Rekart -> Shopify (Milestone 3).
+// Doubles as the audit log (Milestone 4 Sync Log) and the retry queue: rows with
+// status="pending" and nextAttemptAt <= now are retried by the sweep worker.
+// Unique on (shop, shopifyOrderId, rekartStatus) makes a given transition
+// idempotent — re-delivery of the same status updates the existing row.
+model FulfillmentPush {
+  id                   String    @id @default(cuid())
+  shop                 String
+  shopifyOrderId       String // numeric id or GID as sent by Rekart
+  rekartStatus         String // delivery_scheduled | out_for_delivery | delivered | failed | return_collected
+  rekartDeliveryId     String? // Rekart's delivery id, for traceability
+  mappedAction         String // create_fulfillment | event:IN_TRANSIT | event:DELIVERED | event:FAILURE | note
+  status               String    @default("pending") // pending | succeeded | failed | dead
+  attempts             Int       @default(0)
+  lastError            String?
+  shopifyFulfillmentId String? // fulfillment GID created/affected
+  trackingNumber       String?
+  trackingUrl          String?
+  trackingCompany      String?
+  occurredAt           DateTime?
+  nextAttemptAt        DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@unique([shop, shopifyOrderId, rekartStatus, rekartDeliveryId])
+  @@index([status, nextAttemptAt])
+  @@index([shop, createdAt])
+}
+
+// Durable queue for GDPR webhooks. A row is written BEFORE forwarding to the
+// Rekart backend; it stays "pending" until a forward succeeds, so the retry
+// sweep can re-deliver compliance requests that failed the first time.
+model GdprRequest {
+  id         Int       @id @default(autoincrement())
+  shop       String
+  topic      String
+  payload    String
+  status     String    @default("pending")
+  createdAt  DateTime  @default(now())
+  retriedAt  DateTime?
+  retryCount Int       @default(0)
+
+  @@index([shop, status])
+}
+
+// Maps a Shopify product variant to a Rekart product (Phase 4 product mapping).
+// One row per (shop, shopifyVariantId); the merchant confirms/overrides the
+// auto-match suggestions on the Products screen.
+model ShopifyProductLink {
+  id                  String   @id @default(cuid())
+  shopId              String // the .myshopify.com domain
+  shopifyVariantId    String
+  shopifyProductTitle String
+  shopifySku          String?
+  rekartProductId     Int
+  rekartProductName   String?
+  matchedAuto         Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([shopId, shopifyVariantId])
+  @@index([shopId])
+}
+
+// Maps a Shopify order to the fulfillment created for it, so later status events
+// (in_transit / delivered / failure) target the right fulfillment GID.
+model FulfillmentLink {
+  id                   String   @id @default(cuid())
+  shop                 String
+  shopifyOrderId       String
+  shopifyFulfillmentId String
+  createdAt            DateTime @default(now())
+
+  @@unique([shop, shopifyOrderId])
+}
+
+// Phase 3 — inbound order sync (Shopify -> Rekart). One row per Shopify order;
+// the retry queue uses status + nextAttemptAt.
+model ShopifyOrderSync {
+  id             String    @id @default(cuid())
+  shop           String
+  shopifyOrderId String
+  rekartOrderId  String?
+  status         String    @default("pending")
+  attempts       Int       @default(0)
+  lastError      String?
+  nextAttemptAt  DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([shop, shopifyOrderId])
+  @@index([status, nextAttemptAt])
+  @@index([shop, createdAt])
+}
+
+// Phase 3 — inbound customer sync (Shopify -> Rekart). Maps a Shopify customer
+// to its Rekart user + address.
+model ShopifyCustomerSync {
+  id                String   @id @default(cuid())
+  shop              String
+  shopifyCustomerId String
+  rekartUserId      String?
+  rekartAddressId   String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([shop, shopifyCustomerId])
+  @@index([shop])
+}

@@ -1,0 +1,13 @@
+name = "React Router"
+roles = ["frontend", "backend"]
+webhooks_path = "/webhooks/app/uninstalled"
+
+[commands]
+# `predev = "npx prisma generate"` removed: on Windows it recurringly hit EPERM
+# trying to overwrite the locked query-engine DLL on every dev restart. The
+# client is committed/generated; regenerate manually after schema changes with
+# `npx prisma generate` (or `npm run setup`).
+# TODO: restore "npx prisma migrate deploy && ..." before production deploy.
+# Temporarily skipped for local SQLite dev: the DB is synced via `prisma db push`,
+# and `migrate deploy` fails on the MySQL-pinned migration_lock during the sqlite swap.
+dev = "npm exec react-router dev"
