@@ -1,0 +1,23 @@
+# Python caches / build
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+*.egg-info
+.venv
+venv
+
+# Secrets & local env
+.env
+.env.*
+!.env.example
+
+# Tests are not needed in the runtime image
+tests
+
+# VCS / editor / OS
+.git
+.DS_Store
+.vscode
+.idea

@@ -849,11 +849,12 @@ curl https://dev3.rekart.io/api/shops/fresh-dairy.myshopify.com/stats \
 
 | Rekart DeliveryItem status | Shopify action | Merchant sees |
 |---------------------------|----------------|---------------|
-| _(created / scheduled)_ | `fulfillmentCreate` open | Fulfillment created |
-| _(driver picks up)_ | `fulfillmentEventCreate` IN_TRANSIT | Out for delivery |
+| `confirmed` / `packed` | `fulfillmentCreate` open | Fulfillment created |
+| `ready_to_ship` / `shipped` | `fulfillmentEventCreate` IN_TRANSIT | In transit |
 | `delivered` | `fulfillmentEventCreate` DELIVERED | Delivered |
-| `cancelled` / not delivered | `fulfillmentEventCreate` FAILURE | Delivery issue |
-| _(container return)_ | Order metafield note | Return logged |
+| `cancelled` | `orderCancel` (no refund/restock) | Order cancelled |
+| `failed` | `fulfillmentEventCreate` FAILURE | Delivery failed |
+| `return_collected` | `fulfillmentEventCreate` ATTEMPTED_DELIVERY | Return collected |
 
 **Status:** ⚠️ Likely exists — confirm path and response shape
 
@@ -949,10 +950,10 @@ Rekart team adds a job that fires when a rider marks delivery complete, calling 
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `shop` | string | ✅ | Merchant `.myshopify.com` domain |
-| `shopify_order_id` | string | ✅ | Shopify order to update |
+| `shop_domain` | string | ✅ | Merchant `.myshopify.com` domain |
+| `external_order_id` | string | ✅ | Shopify order to update |
 | `rekart_delivery_id` | integer | ✅ | Rekart `deli_id` |
-| `status` | string | ✅ | `delivery_scheduled` \| `out_for_delivery` \| `delivered` \| `failed` \| `return_collected` |
+| `status` | string | ✅ | `confirmed` \| `packed` \| `ready_to_ship` \| `shipped` \| `delivered` \| `cancelled` \| `failed` \| `return_collected` |
 | `occurred_at` | string (ISO 8601) | ✅ | When status changed |
 | `tracking.number` | string | ❌ | Tracking number |
 | `tracking.url` | string | ❌ | Tracking URL |

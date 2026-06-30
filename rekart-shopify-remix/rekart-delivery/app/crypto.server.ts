@@ -60,11 +60,9 @@ export function decrypt(payload: string): string {
     );
   }
   const [ivHex, authTagHex, dataHex] = parts;
-  const decipher = createDecipheriv(
-    ALGORITHM,
-    getKey(),
-    Buffer.from(ivHex, "hex"),
-  );
+  const iv = Buffer.from(ivHex, "hex");
+  if (iv.length !== IV_LENGTH) throw new Error(`Bad IV length: ${iv.length}`);
+  const decipher = createDecipheriv(ALGORITHM, getKey(), iv);
   // Must be set before update()/final(); final() throws on tag mismatch.
   decipher.setAuthTag(Buffer.from(authTagHex, "hex"));
   const decrypted = Buffer.concat([

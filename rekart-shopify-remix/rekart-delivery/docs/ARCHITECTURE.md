@@ -57,7 +57,7 @@ Poll delivery/info  -->  POST /api/fulfillment-push (Remix)  -->  Shopify GraphQ
 **UI:** Shopify Polaris **web components** (`s-*` tags — NOT React Polaris)
 **Auth:** `@shopify/shopify-app-react-router@^1.1.0` (session tokens, HMAC verification)
 **DB ORM:** Prisma
-**DB:** MySQL 8.0+ (AWS RDS — connection pending from DevOps)
+**DB:** PostgreSQL 16 (existing WhatsApp-server instance)
 **Runtime:** Node.js (Shopify CLI in dev, server process in production)
 
 **Key directories:**
@@ -95,12 +95,7 @@ rekart-delivery/
 ├── prisma/
 │   ├── schema.prisma
 │   └── migrations/
-│       ├── 20260616130926_init_mysql/
-│       ├── ..._add_default_slot_id/
-│       ├── ..._add_token_expires_at/
-│       ├── ..._add_gdpr_index/
-│       ├── ..._add_token_invalid/
-│       └── ..._phase3_schema_prep/
+│       └── 20260625000000_init_postgresql/   # single PostgreSQL baseline
 ├── scripts/
 │   └── migrate-tokens.ts           # CBC/plaintext -> GCM migration (--dry-run)
 ├── docs/
@@ -172,23 +167,33 @@ jobs, manages riders/routes/subscriptions. **Not owned by this project.**
 | Remix App | Embedded Shopify App | Vrushank | ✅ Built, not deployed to prod |
 | FastAPI Reference Backend | Reference spec only | Vrushank (spec) / Rekart team (impl) | ✅ Spec complete (20 pytest) |
 | Rekart Laravel Backend | External SaaS | Pappu / Rohan | Existing, needs extensions |
-| MySQL RDS | Managed DB | DevOps | 🔴 Not provisioned |
+| PostgreSQL | Managed DB | DevOps | 🟢 Existing WhatsApp-server instance |
 | Redis | Task queue | DevOps | 🔴 Not provisioned |
 
 ---
 
 ## Databases
 
-### Remix App Database (MySQL)
+### Remix App Database (PostgreSQL)
 
-**Provider:** MySQL 8.0+ (AWS RDS) · **ORM:** Prisma · **Charset:** utf8mb4_unicode_ci
+**Provider:** PostgreSQL 16 (existing WhatsApp-server instance) · **ORM:** Prisma · **Encoding:** UTF8
 **Migration strategy:** Offline diff (`prisma migrate diff`), apply with `prisma migrate deploy`.
+
+> **Local dev vs. production — two schema files.** Prisma forbids `env()` in the
+> datasource `provider`, so the repo keeps two schemas: **`prisma/schema.prisma`**
+> is canonical (`provider = "postgresql"`, migrations in `prisma/migrations/`) and
+> drives Docker + production via `prisma migrate deploy`; **`prisma/schema.sqlite.prisma`**
+> is a local-dev mirror (`provider = "sqlite"`). No `@db.Text` is needed: PostgreSQL
+> maps Prisma `String` to unbounded `TEXT` by default. Local dev: `DATABASE_URL=file:./dev.db`
+> in `.env` + `npm run setup:local` (`npm run dev` regenerates the sqlite client via
+> `predev`). Production/Docker: PostgreSQL 16 via the canonical schema. **The two files
+> must be kept in sync.** See `docs/DOCKER.md`.
 
 #### Schema (verified against `prisma/schema.prisma`)
 
 ```prisma
 datasource db {
-  provider = "mysql"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -225,7 +230,7 @@ model ShopOnboarding {
   completed            Boolean   @default(false)
   connected            Boolean   @default(false)
   rekartMerchantId     String?   // Rekart client_id (string)
-  rekartAccessToken    String?   @db.Text  // AES-256-GCM encrypted
+  rekartAccessToken    String?   // AES-256-GCM encrypted (TEXT in PostgreSQL)
   tokenInvalid         Boolean   @default(false)
   defaultSlotId        Int?
   rekartTokenExpiresAt DateTime?
@@ -243,10 +248,10 @@ model FulfillmentPush {
   mappedAction         String
   status               String    @default("pending") // pending|succeeded|failed|dead
   attempts             Int       @default(0)
-  lastError            String?   @db.Text
+  lastError            String?
   shopifyFulfillmentId String?
   trackingNumber       String?
-  trackingUrl          String?   @db.Text
+  trackingUrl          String?
   trackingCompany      String?
   occurredAt           DateTime?
   nextAttemptAt        DateTime?
@@ -272,7 +277,7 @@ model GdprRequest {
   id         Int       @id @default(autoincrement())
   shop       String
   topic      String
-  payload    String    @db.Text  // raw Shopify webhook body (contains PII)
+  payload    String    // raw Shopify webhook body (contains PII); TEXT in PostgreSQL
   status     String    @default("pending") // pending|forwarded|failed
   createdAt  DateTime  @default(now())
   retriedAt  DateTime?
@@ -285,10 +290,10 @@ model ShopifyProductLink {
   id                  String   @id @default(cuid())
   shopId              String
   shopifyVariantId    String
-  shopifyProductTitle String   @db.Text
+  shopifyProductTitle String
   shopifySku          String?
   rekartProductId     Int
-  rekartProductName   String?  @db.Text
+  rekartProductName   String?
   matchedAuto         Boolean  @default(false)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
@@ -304,7 +309,7 @@ model ShopifyOrderSync {
   rekartOrderId  String?
   status         String    @default("pending") // pending|synced|failed|dead
   attempts       Int       @default(0)
-  lastError      String?   @db.Text
+  lastError      String?
   nextAttemptAt  DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
@@ -331,13 +336,10 @@ model ShopifyCustomerSync {
 > `ShopifyOrderSync`/`ShopifyCustomerSync` exist as **pre-built schema** (D018);
 > no code reads/writes them yet (Phase 3 not started, see D021).
 
-**Migrations (apply in order with `prisma migrate deploy`):**
-1. `20260616130926_init_mysql`
-2. `..._add_default_slot_id`
-3. `..._add_token_expires_at`
-4. `..._add_gdpr_index`
-5. `..._add_token_invalid`
-6. `..._phase3_schema_prep` (ShopifyOrderSync, ShopifyCustomerSync, rekartOAuthState, Session @@index)
+**Migrations (apply with `prisma migrate deploy`):**
+1. `20260625000000_init_postgresql` — single PostgreSQL baseline covering all
+   models (the prior incremental MySQL migrations were collapsed into this baseline
+   when the provider switched from MySQL to PostgreSQL).
 
 ---
 
@@ -442,7 +444,7 @@ Authorization-code redirect to Rekart, `state` nonce in `ShopOnboarding.rekartOA
 
 **Production (planned):**
 ```bash
-export DATABASE_URL="mysql://user:password@host:3306/rekart_shopify"
+export DATABASE_URL="postgresql://user:password@host:5432/rekart_shopify"
 npx prisma migrate deploy
 npx ts-node scripts/migrate-tokens.ts --dry-run   # preview
 npx ts-node scripts/migrate-tokens.ts             # migrate tokens to GCM
@@ -466,11 +468,13 @@ ShopOnboarding.defaultSlotId    -> slot_id
 
 ### Delivery Status Mapping
 ```
-(scheduled)        -> fulfillmentCreate (open)
-out_for_delivery   -> fulfillmentEventCreate IN_TRANSIT
+confirmed / packed -> fulfillmentCreate (open)
+ready_to_ship      -> fulfillmentEventCreate IN_TRANSIT
+shipped            -> fulfillmentEventCreate IN_TRANSIT
 delivered          -> fulfillmentEventCreate DELIVERED
-cancelled/failed   -> fulfillmentEventCreate FAILURE
-return_collected   -> order metafield note
+cancelled          -> orderCancel (hard cancel, no refund/restock)
+failed             -> fulfillmentEventCreate FAILURE
+return_collected   -> fulfillmentEventCreate ATTEMPTED_DELIVERY
 ```
 
 ### Multi-Tenant Isolation
@@ -491,7 +495,7 @@ SHOPIFY_APP_URL=                      # blank in dev (CLI manages it)
 REKART_BACKEND_URL=https://dev3.rekart.io   # bare host, no /api
 REKART_STATIC_API_KEY=<shared with Pappu>
 ENCRYPTION_KEY=<openssl rand -hex 32> # REQUIRED — connect-rekart throws if missing
-DATABASE_URL=mysql://user:password@host:3306/rekart_shopify  # from DevOps
+DATABASE_URL=postgresql://user:password@host:5432/rekart_shopify  # from DevOps
 ```
 
 **`rekart-delivery/rekart-backend/.env`:**
@@ -499,7 +503,7 @@ DATABASE_URL=mysql://user:password@host:3306/rekart_shopify  # from DevOps
 SHOPIFY_API_SECRET=<same as above>
 REKART_BACKEND_URL=https://dev3.rekart.io
 REKART_STATIC_API_KEY=<same shared key>
-DATABASE_URL=mysql+aiomysql://user:password@host:3306/rekart_db
+DATABASE_URL=postgresql+asyncpg://user:password@host:5432/rekart_db
 REDIS_URL=redis://localhost:6379/0
 APP_ENV=development
 ```
@@ -522,14 +526,14 @@ api_version = "2025-10"
 ```
 
 All migrations generated offline via `prisma migrate diff`; apply with
-`prisma migrate deploy`. **Never run `prisma migrate dev` without a live MySQL —
+`prisma migrate deploy`. **Never run `prisma migrate dev` without a live PostgreSQL —
 it hangs.**
 
 ---
 
 ## Technical Assumptions
 
-1. Rekart uses MySQL → Shopify app uses MySQL to match.
+1. Shopify app DB switched from MySQL to PostgreSQL — reuses the existing WhatsApp-server PostgreSQL instance (Rekart's own Laravel DB remains MySQL; the two are independent).
 2. Rekart panel API uses **POST for reads** (`slot/list`, `product/list`, `plan/list`).
 3. `panel/order/create` has `external_source`/`external_order_id` in the model; whether the API accepts them is unconfirmed (Q1).
 4. Rekart customers keyed by `(client_id, phone)` → no-phone customers can't sync (`MISSING_PHONE`).
@@ -545,7 +549,7 @@ it hangs.**
 ## Technical Debt
 
 ### High
-- MySQL not provisioned (DevOps) — blocks production.
+- PostgreSQL: reuse existing WhatsApp-server instance (DevOps to confirm credentials/DB).
 - `delivery/info` path unknown (Q6) — blocks polling job.
 - `panel/order/create` shape unconfirmed (Q1) — blocks Phase 3.
 - OAuth 2.0 not built — interim password login in place (`rekartOAuthState` field ready).

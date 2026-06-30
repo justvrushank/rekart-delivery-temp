@@ -390,7 +390,7 @@ Rekart has **no SKU model** → SKU matching will never fire. Name matching is t
 All done:
 - `POST /api/fulfillment-push` with `X-API-Key` auth + Zod validation
 - Shopify GraphQL `fulfillmentCreate` + `fulfillmentEventCreate`
-- Status mapping: `delivery_scheduled / out_for_delivery / delivered / failed / return_collected`
+- Status mapping: `confirmed / packed / ready_to_ship / shipped / delivered / cancelled / failed / return_collected`
 - `FulfillmentLink` cache (no duplicate fulfillments per order)
 - Retry queue: 6 attempts, exponential backoff, `dead` terminal state
 - `POST /api/fulfillment-retry-sweep` (authenticated, also sweeps GDPR)

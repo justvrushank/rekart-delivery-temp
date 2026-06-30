@@ -70,7 +70,7 @@
 |---|------|----------|--------|-------|
 | T036 | Build `POST /api/fulfillment-push` endpoint | P0 | ✅ Done | `X-API-Key` auth, Zod validated |
 | T037 | Build Shopify GraphQL fulfillment service | P0 | ✅ Done | `fulfillmentCreate` + `fulfillmentEventCreate` |
-| T038 | Build delivery status → Shopify action mapping | P0 | ✅ Done | 5 statuses: scheduled/out_for_delivery/delivered/failed/return_collected |
+| T038 | Build delivery status → Shopify action mapping | P0 | ✅ Done | 8 lowercase Rekart-native statuses: confirmed/packed/ready_to_ship/shipped/delivered/cancelled/failed/return_collected |
 | T039 | Build `FulfillmentLink` cache (no duplicate fulfillments per order) | P0 | ✅ Done | `@@unique([shop, shopifyOrderId])`, stores `shopifyFulfillmentId` |
 | T040 | Build retry queue (6 attempts, exponential backoff, `dead` terminal) | P0 | ✅ Done | |
 | T041 | Build `POST /api/fulfillment-retry-sweep` (authenticated, sweeps FulfillmentPush + GDPR) | P0 | ✅ Done | |

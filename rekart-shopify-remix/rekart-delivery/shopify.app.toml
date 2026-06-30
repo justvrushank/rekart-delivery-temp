@@ -2,16 +2,14 @@
 
 client_id = "954401100dd738ee168c9ebb21ae2e89"
 name = "Rekart Delivery"
-# Set this to your deployed app URL (the value of SHOPIFY_APP_URL in .env).
-# TOML cannot read env vars, so fill it in manually for non-dev deploys.
-# During `shopify app dev` the CLI overwrites this with the tunnel URL because
-# automatically_update_urls_on_dev = true (see [build] below).
-application_url = "https://example.com"
+# Production app URL. During `shopify app dev` the CLI overwrites this with the
+# tunnel URL because automatically_update_urls_on_dev = true (see [build] below).
+application_url = "https://release-shopify.rekart.io"
 embedded = true
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_orders,write_orders,read_customers,read_products,write_products,write_fulfillments,read_fulfillments"
+scopes = "read_orders,write_orders,read_customers,read_products,write_products,write_fulfillments,read_fulfillments,write_merchant_managed_fulfillment_orders,write_assigned_fulfillment_orders,write_order_edits"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 
@@ -47,11 +45,25 @@ api_version = "2025-10"
 # delivered directly to the env-specific Rekart FastAPI backend URL.
 
 [auth]
-# OAuth callback allow-list. Must exactly match the deployed app URL +
-# /auth/callback (i.e. https://<SHOPIFY_APP_URL>/auth/callback). Update this to
-# the real host before deploying; `shopify app dev` keeps it in sync with the
-# tunnel URL automatically.
-redirect_urls = [ "https://example.com/auth/callback" ]
+# OAuth callback allow-list. This is Shopify's `[auth].redirect_urls` array — the
+# config schema has no `[[redirects]]` section. Includes prod + staging + the
+# current dev tunnel so local `shopify app dev` keeps working (the CLI also
+# auto-syncs the tunnel URL during dev).
+redirect_urls = [
+  "https://shopify.rekart.io/auth/callback",
+  "https://release-shopify.rekart.io/auth/callback",
+  "https://flip-billion-greensboro-piano.trycloudflare.com/auth/callback"
+]
 
 [build]
 automatically_update_urls_on_dev = true
+
+# App Proxy: storefront requests to https://{shop}/apps/rekart/* are signed by
+# Shopify and forwarded to the Remix app (verified via authenticate.public.appProxy).
+# The subscription theme extension calls /apps/rekart/plans to load plans/settings.
+# `url` is a real URI (Shopify rejects `{{...}}` placeholders here). Set to the
+# production host; `shopify app dev` keeps it in sync with the tunnel URL.
+[app_proxy]
+url = "https://release-shopify.rekart.io/apps/rekart"
+subpath = "rekart"
+prefix = "apps"

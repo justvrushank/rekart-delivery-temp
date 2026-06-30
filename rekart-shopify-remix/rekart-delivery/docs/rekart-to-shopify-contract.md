@@ -27,9 +27,9 @@ Content-Type: application/json
 
 ```json
 {
-  "shop": "rekart-dev.myshopify.com",
-  "shopify_order_id": "5544332211000",
-  "status": "out_for_delivery",
+  "shop_domain": "rekart-dev.myshopify.com",
+  "external_order_id": "5544332211000",
+  "status": "shipped",
   "tracking": { "number": "RK123", "url": "https://track.rekart/RK123", "company": "Rekart" },
   "occurred_at": "2026-06-12T09:30:00Z",
   "rekart_delivery_id": "djb_01HZX"
@@ -38,8 +38,8 @@ Content-Type: application/json
 
 | Field | Required | Notes |
 | ----- | -------- | ----- |
-| `shop` | yes | `.myshopify.com` domain with a stored offline session. |
-| `shopify_order_id` | yes | Numeric id or full `gid://shopify/Order/...`. |
+| `shop_domain` | yes | `.myshopify.com` domain with a stored offline session. |
+| `external_order_id` | yes | Numeric id or full `gid://shopify/Order/...`. |
 | `status` | yes | One of the Rekart states below. |
 | `tracking` | no | `{ number, url, company }`; `company` defaults to `Rekart`. |
 | `occurred_at` | no | ISO-8601; recorded for the log. |
@@ -49,15 +49,18 @@ Content-Type: application/json
 
 | Rekart `status` | Shopify action | Result |
 | --------------- | -------------- | ------ |
-| `delivery_scheduled` | `fulfillmentCreateV2` on the order's open fulfillment orders | Fulfillment created (order Fulfilled) |
-| `out_for_delivery` | `fulfillmentEventCreate` `IN_TRANSIT` | "Out for delivery" on the shipment |
+| `confirmed` | `fulfillmentCreateV2` on the order's open fulfillment orders | Fulfillment created (order Fulfilled) |
+| `packed` | `fulfillmentCreateV2` (idempotent once already fulfilled) | Order packed |
+| `ready_to_ship` | `fulfillmentEventCreate` `IN_TRANSIT` | "Ready to ship" on the shipment |
+| `shipped` | `fulfillmentEventCreate` `IN_TRANSIT` | "Shipped" on the shipment |
 | `delivered` | `fulfillmentEventCreate` `DELIVERED` | "Delivered" |
-| `failed` | `fulfillmentEventCreate` `FAILURE` | "Delivery issue" |
-| `return_collected` | order metafield `rekart.return_status` | "Return logged" (Shopify has no public timeline-comment API) |
+| `cancelled` | `orderCancel` (no refund, no restock) | Order cancelled |
+| `failed` | `fulfillmentEventCreate` `FAILURE` | "Delivery failed" |
+| `return_collected` | `fulfillmentEventCreate` `ATTEMPTED_DELIVERY` | "Return collected" |
 
-Event statuses require a fulfillment to exist first; send `delivery_scheduled`
-before the shipment events. If an event arrives first, the push fails softly and
-is retried (it will succeed once the fulfillment exists).
+Event statuses require a fulfillment to exist first; send `confirmed` (or
+`packed`) before the shipment events. If an event arrives first, the push fails
+softly and is retried (it will succeed once the fulfillment exists).
 
 Response `200` (always, unless auth/validation fails):
 

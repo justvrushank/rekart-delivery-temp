@@ -4,6 +4,10 @@
 
 export interface ShopifyProductInput {
   variantId: string;
+  // Plain numeric Shopify product id (GID prefix stripped). Optional so callers
+  // and tests that only care about matching can omit it; the route loader always
+  // supplies it so it can be forwarded to Rekart in the mapping payload.
+  productId?: string;
   productTitle: string;
   sku: string | null;
 }
@@ -18,6 +22,7 @@ export type MatchConfidence = "exact_name" | "exact_sku" | "fuzzy" | "none";
 
 export interface ProductMatch {
   shopifyVariantId: string;
+  shopifyProductId: string;
   shopifyProductTitle: string;
   shopifySkuCode: string | null;
   rekartProductId: number | null;
@@ -69,6 +74,7 @@ export function levenshtein(a: string, b: string): number {
 function unmatched(shopify: ShopifyProductInput): ProductMatch {
   return {
     shopifyVariantId: shopify.variantId,
+    shopifyProductId: shopify.productId ?? "",
     shopifyProductTitle: shopify.productTitle,
     shopifySkuCode: shopify.sku,
     rekartProductId: null,
@@ -85,6 +91,7 @@ function matched(
 ): ProductMatch {
   return {
     shopifyVariantId: shopify.variantId,
+    shopifyProductId: shopify.productId ?? "",
     shopifyProductTitle: shopify.productTitle,
     shopifySkuCode: shopify.sku,
     rekartProductId: rekart.productId,

@@ -1,0 +1,10 @@
+{
+  "rekart": {
+    "buy_once": "Buy Once",
+    "subscribe": "Subscribe & Save",
+    "delivery_frequency": "Delivery Frequency",
+    "quantity_per_delivery": "Quantity Per Delivery",
+    "start_date": "Start Date",
+    "delivery_instructions": "Delivery Instructions"
+  }
+}

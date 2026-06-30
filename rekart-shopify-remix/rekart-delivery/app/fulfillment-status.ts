@@ -3,9 +3,12 @@
 // Shopify fulfillment operation. Pure + framework-free so it is trivially testable.
 
 export const REKART_STATUSES = [
-  "delivery_scheduled",
-  "out_for_delivery",
+  "confirmed",
+  "packed",
+  "ready_to_ship",
+  "shipped",
   "delivered",
+  "cancelled",
   "failed",
   "return_collected",
 ] as const;
@@ -13,23 +16,32 @@ export const REKART_STATUSES = [
 export type RekartStatus = (typeof REKART_STATUSES)[number];
 
 // The Shopify FulfillmentEvent status values we emit.
-export type ShopifyFulfillmentEventStatus = "IN_TRANSIT" | "DELIVERED" | "FAILURE";
+export type ShopifyFulfillmentEventStatus =
+  | "IN_TRANSIT"
+  | "DELIVERED"
+  | "FAILURE"
+  | "ATTEMPTED_DELIVERY";
 
 export type FulfillmentAction =
   | { kind: "create_fulfillment"; label: string }
   | { kind: "event"; eventStatus: ShopifyFulfillmentEventStatus; label: string }
-  | { kind: "note"; label: string };
+  | { kind: "note"; label: string }
+  | { kind: "cancel_order"; label: string };
 
 const STATUS_MAP: Record<RekartStatus, FulfillmentAction> = {
   // Create the Shopify fulfillment (moves the order to "Fulfilled" / open shipment).
-  delivery_scheduled: { kind: "create_fulfillment", label: "Fulfillment created" },
+  confirmed: { kind: "create_fulfillment", label: "Order confirmed" },
+  packed: { kind: "create_fulfillment", label: "Order packed" },
   // Shipment progress events on the created fulfillment.
-  out_for_delivery: { kind: "event", eventStatus: "IN_TRANSIT", label: "Out for delivery" },
+  ready_to_ship: { kind: "event", eventStatus: "IN_TRANSIT", label: "Ready to ship" },
+  shipped: { kind: "event", eventStatus: "IN_TRANSIT", label: "Shipped" },
   delivered: { kind: "event", eventStatus: "DELIVERED", label: "Delivered" },
-  failed: { kind: "event", eventStatus: "FAILURE", label: "Delivery issue" },
-  // Shopify has no public timeline-comment API, so a return is recorded as an
-  // order metafield (visible under the order's metafields / via apps).
-  return_collected: { kind: "note", label: "Return logged" },
+  // cancelled → hard cancel on Shopify via orderCancel mutation.
+  // Intentional: when Rekart cancels a delivery, the Shopify order is also cancelled.
+  // Do NOT change to FAILURE event — that would leave the order open on Shopify.
+  cancelled: { kind: "cancel_order", label: "Order cancelled" },
+  failed: { kind: "event", eventStatus: "FAILURE", label: "Delivery failed" },
+  return_collected: { kind: "event", eventStatus: "ATTEMPTED_DELIVERY", label: "Return collected" },
 };
 
 export function isRekartStatus(value: unknown): value is RekartStatus {
@@ -49,5 +61,7 @@ export function describeAction(action: FulfillmentAction): string {
       return `event:${action.eventStatus}`;
     case "note":
       return "note";
+    case "cancel_order":
+      return "cancel_order";
   }
 }

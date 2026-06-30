@@ -10,6 +10,7 @@
 
 import { unauthenticated } from "./shopify.server";
 import db from "./db.server";
+import { toGid } from "./gid";
 import {
   type RekartStatus,
   type ShopifyFulfillmentEventStatus,
@@ -50,7 +51,18 @@ export interface AdminGraphqlClient {
 }
 
 function toOrderGid(orderId: string): string {
-  return orderId.startsWith("gid://") ? orderId : `gid://shopify/Order/${orderId}`;
+  return toGid("Order", orderId);
+}
+
+/**
+ * Parse an inbound occurred_at into a Date, or null when absent/unparseable.
+ * Never returns an Invalid Date — Prisma rejects those by throwing, which would
+ * break the "always record the push" guarantee.
+ */
+function parseOccurredAt(value?: string | null): Date | null {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 function errMessage(err: unknown): string {
@@ -119,6 +131,12 @@ async function createFulfillment(admin: AdminGraphqlClient, input: PushInput): P
   const json = await resp.json();
   const payload = json?.data?.fulfillmentCreateV2;
   const userErrors = payload?.userErrors ?? [];
+  // A cancelled/closed order can't be fulfilled — surface a specific code so the
+  // Sync Log shows a clear message instead of Shopify's raw text, and so retries
+  // don't keep churning on an order that will never accept a fulfillment.
+  if (userErrors.some((e: any) => e.message?.toLowerCase().includes("cancel") || e.message?.toLowerCase().includes("closed"))) {
+    return { ok: false, error: "ORDER_CANCELLED" };
+  }
   if (userErrors.length) return { ok: false, error: userErrorsToString(userErrors) };
 
   const fulfillmentId: string | undefined = payload?.fulfillment?.id;
@@ -169,12 +187,22 @@ async function createEvent(
   input: PushInput,
   eventStatus: ShopifyFulfillmentEventStatus,
 ): Promise<PushResult> {
-  const fulfillmentId = await resolveFulfillmentId(admin, input);
+  let fulfillmentId = await resolveFulfillmentId(admin, input);
   if (!fulfillmentId) {
-    // No fulfillment yet — likely an out-of-order event before delivery_scheduled.
-    // Returning an error keeps the row pending so a retry can succeed once the
-    // fulfillment exists.
-    return { ok: false, error: "no fulfillment found for order; cannot post event yet" };
+    // No fulfillment exists yet — e.g. Rekart sent a terminal status (delivered /
+    // shipped / ready_to_ship / return_collected) without a prior confirmed/packed
+    // (the create_fulfillment statuses). Auto-create the fulfillment first, then
+    // post the event onto it, so a lone terminal status still lands on the order.
+    const created = await createFulfillment(admin, input);
+    if (!created.ok) {
+      return { ok: false, error: created.error ?? "Could not create fulfillment" };
+    }
+    // createFulfillment returns the new id and caches the FulfillmentLink; fall back
+    // to a re-resolve if it somehow didn't surface an id.
+    fulfillmentId = created.fulfillmentId ?? (await resolveFulfillmentId(admin, input));
+    if (!fulfillmentId) {
+      return { ok: false, error: "Fulfillment created but ID could not be resolved" };
+    }
   }
   const resp = await admin.graphql(
     `#graphql
@@ -189,7 +217,18 @@ async function createEvent(
   const json = await resp.json();
   const payload = json?.data?.fulfillmentEventCreate;
   const userErrors = payload?.userErrors ?? [];
-  if (userErrors.length) return { ok: false, error: userErrorsToString(userErrors) };
+  if (userErrors.length) {
+    const msg = userErrorsToString(userErrors);
+    // Secondary guard: a stale/missing FulfillmentLink id makes Shopify reject the
+    // event with a "not found" error. Log it clearly for debugging — the row still
+    // fails softly and is retried.
+    if (/not found|does not exist/i.test(msg)) {
+      console.error(
+        `[fulfillment] ${eventStatus} event rejected for ${input.shop} order ${input.shopifyOrderId} (fulfillment ${fulfillmentId}): ${msg}`,
+      );
+    }
+    return { ok: false, error: msg };
+  }
   return { ok: true, fulfillmentId };
 }
 
@@ -229,6 +268,32 @@ async function recordReturnNote(admin: AdminGraphqlClient, input: PushInput, lab
   return { ok: true };
 }
 
+async function cancelOrder(admin: AdminGraphqlClient, input: PushInput): Promise<PushResult> {
+  const orderGid = toOrderGid(input.shopifyOrderId);
+  const resp = await admin.graphql(
+    `#graphql
+    mutation orderCancel($orderId: ID!, $reason: OrderCancelReason!, $refund: Boolean!, $restock: Boolean!) {
+      orderCancel(orderId: $orderId, reason: $reason, refund: $refund, restock: $restock) {
+        job { id done }
+        orderCancelUserErrors { field message code }
+      }
+    }`,
+    { variables: { orderId: orderGid, reason: "OTHER", refund: false, restock: false } },
+  );
+  const json = await resp.json();
+  const userErrors: Array<{ field?: string[] | null; message: string; code?: string | null }> =
+    json?.data?.orderCancel?.orderCancelUserErrors ?? [];
+  if (userErrors.length) {
+    // Already cancelled is the idempotent success case — a retry of the same
+    // cancellation must not fail the row.
+    if (userErrors.some((e) => e.code === "ORDER_ALREADY_CANCELLED")) {
+      return { ok: true };
+    }
+    return { ok: false, error: userErrors[0].message };
+  }
+  return { ok: true };
+}
+
 /** Perform the Shopify-side operation for one push. Never throws. */
 export async function pushFulfillmentStatus(input: PushInput): Promise<PushResult> {
   const action = mapStatus(input.status);
@@ -241,6 +306,8 @@ export async function pushFulfillmentStatus(input: PushInput): Promise<PushResul
         return await createEvent(admin, input, action.eventStatus);
       case "note":
         return await recordReturnNote(admin, input, action.label);
+      case "cancel_order":
+        return await cancelOrder(admin, input);
     }
   } catch (err) {
     return { ok: false, error: errMessage(err) };
@@ -266,6 +333,17 @@ export async function applyResult(pushId: string, attempts: number, result: Push
         nextAttemptAt: null,
         ...(result.fulfillmentId ? { shopifyFulfillmentId: result.fulfillmentId } : {}),
       },
+    });
+    return;
+  }
+  // A cancelled/closed order will never accept a fulfillment — mark dead
+  // immediately rather than burning the full retry budget. Covers every caller
+  // (inline handleFulfillmentPush, the retry sweep, and the manual Retry button),
+  // since they all route their result through applyResult.
+  if (result.error === "ORDER_CANCELLED") {
+    await db.fulfillmentPush.update({
+      where: { id: pushId },
+      data: { status: "dead", attempts, lastError: result.error, nextAttemptAt: null },
     });
     return;
   }
@@ -309,11 +387,14 @@ export async function handleFulfillmentPush(input: PushInput) {
       trackingNumber: input.tracking?.number ?? null,
       trackingUrl: input.tracking?.url ?? null,
       trackingCompany: input.tracking?.company ?? null,
-      occurredAt: input.occurredAt ? new Date(input.occurredAt) : null,
+      occurredAt: parseOccurredAt(input.occurredAt),
     },
     update: {
       // Re-delivery of the same transition: reset to pending and refresh inputs.
+      // Reset attempts too, so a status that previously exhausted its retry budget
+      // (went "dead") gets a fresh budget on a legitimate re-delivery.
       status: "pending",
+      attempts: 0,
       rekartDeliveryId: input.rekartDeliveryId ?? "",
       mappedAction: describeAction(action),
       lastError: null,
@@ -321,7 +402,7 @@ export async function handleFulfillmentPush(input: PushInput) {
       trackingNumber: input.tracking?.number ?? null,
       trackingUrl: input.tracking?.url ?? null,
       trackingCompany: input.tracking?.company ?? null,
-      occurredAt: input.occurredAt ? new Date(input.occurredAt) : null,
+      occurredAt: parseOccurredAt(input.occurredAt),
     },
   });
 

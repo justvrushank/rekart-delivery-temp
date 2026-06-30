@@ -17,6 +17,7 @@ import {
   SUBSCRIBER_COUNTS,
   validateOnboarding,
 } from "../onboarding-options";
+import { SkeletonSection } from "../skeleton";
 
 const COUNTRIES = [
   "India",
@@ -306,6 +307,14 @@ export default function Onboarding() {
           fulfilment options and set realistic delivery SLAs.
         </s-paragraph>
       </s-section>
+    </s-page>
+  );
+}
+
+export function HydrateFallback() {
+  return (
+    <s-page heading="Setup">
+      <SkeletonSection lines={3} />
     </s-page>
   );
 }

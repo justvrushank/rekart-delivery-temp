@@ -6,8 +6,13 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-const RAW_BACKEND_URL = process.env.REKART_BACKEND_URL;
-export const REKART_BACKEND_URL = RAW_BACKEND_URL?.replace(/\/$/, "");
+// Read at call time (NOT frozen at module load) so a changed REKART_BACKEND_URL
+// is picked up on the next request after a server restart, instead of being
+// stuck on the value present when this module was first imported. Returns the
+// bare host with any trailing slash stripped, or undefined when unset.
+export function backendUrl(): string | undefined {
+  return process.env.REKART_BACKEND_URL?.replace(/\/$/, "");
+}
 
 // Login lives on the main Rekart backend even while REKART_BACKEND_URL points
 // elsewhere (e.g. an ngrok tunnel for the integration endpoints during testing).
@@ -16,8 +21,11 @@ const REKART_LOGIN_URL = RAW_LOGIN_URL?.replace(/\/$/, "");
 
 // Shared secret used to authenticate Remix <-> Rekart calls (both directions:
 // the Remix app signs outbound calls to FastAPI, and Rekart signs inbound calls
-// to the Remix /api/fulfillment-* endpoints).
-const REKART_STATIC_API_KEY = process.env.REKART_STATIC_API_KEY;
+// to the Remix /api/fulfillment-* endpoints). Read at call time so a rotated key
+// is picked up after a restart rather than frozen at module load.
+function staticApiKey(): string | undefined {
+  return process.env.REKART_STATIC_API_KEY;
+}
 
 // HMAC the provided and expected tokens to fixed-length 32-byte digests before
 // comparing. timingSafeEqual requires equal-length inputs, so comparing the raw
@@ -26,9 +34,11 @@ const REKART_STATIC_API_KEY = process.env.REKART_STATIC_API_KEY;
 // makes the inputs always 32 bytes (no length check, no leak) and keeps the
 // compare constant-time. The HMAC key is a fixed constant: we only need a
 // length-hiding, collision-resistant transform here, not key secrecy.
-const DUMMY = Buffer.alloc(32);
+// Not a security key — used only to produce a fixed-length digest for
+// constant-time comparison. The actual secret being compared is the HMAC input.
+const HASH_NORMALISATION_KEY = Buffer.alloc(32);
 function hmacBuf(val: string): Buffer {
-  return createHmac("sha256", DUMMY).update(val).digest();
+  return createHmac("sha256", HASH_NORMALISATION_KEY).update(val).digest();
 }
 
 /**
@@ -38,10 +48,11 @@ function hmacBuf(val: string): Buffer {
  * misconfigured deploy never accepts unauthenticated calls.
  */
 export function verifyRekartToken(request: Request): boolean {
-  if (!REKART_STATIC_API_KEY) return false;
+  const expected = staticApiKey();
+  if (!expected) return false;
   const provided = request.headers.get("X-API-Key");
   if (!provided) return false;
-  return timingSafeEqual(hmacBuf(provided), hmacBuf(REKART_STATIC_API_KEY));
+  return timingSafeEqual(hmacBuf(provided), hmacBuf(expected));
 }
 
 // Hard cap on how long any backend call may block a page load or webhook. The
@@ -51,8 +62,9 @@ const BACKEND_TIMEOUT_MS = 2500;
 
 function backendHeaders(): HeadersInit {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (REKART_STATIC_API_KEY) {
-    headers["X-API-Key"] = REKART_STATIC_API_KEY;
+  const key = staticApiKey();
+  if (key) {
+    headers["X-API-Key"] = key;
   }
   return headers;
 }
@@ -66,7 +78,8 @@ export async function forwardToBackend(
   path: string,
   body: unknown,
 ): Promise<boolean> {
-  if (!REKART_BACKEND_URL) {
+  const base = backendUrl();
+  if (!base) {
     console.warn(
       `[rekart] REKART_BACKEND_URL not set; skipping forward to ${path}`,
     );
@@ -74,9 +87,9 @@ export async function forwardToBackend(
   }
 
   try {
-    // REKART_BACKEND_URL is the bare host; the API lives under /api (same
-    // convention as fetchSyncStats and loginToRekart). `path` starts with "/".
-    const res = await fetch(`${REKART_BACKEND_URL}/api${path}`, {
+    // base is the bare host; the API lives under /api (same convention as
+    // fetchShopStats and loginToRekart). `path` starts with "/".
+    const res = await fetch(`${base}/api${path}`, {
       method: "POST",
       headers: backendHeaders(),
       body: JSON.stringify(body),
@@ -216,6 +229,9 @@ export interface RekartProduct {
   productId: number;
   name: string;
   sku: string | null;
+  // Shopify's product id as known on the Rekart side, when present. Useful for
+  // auto-matching a Shopify product straight to its Rekart counterpart.
+  externalProductId?: string | null;
 }
 
 export interface RekartSlot {
@@ -249,15 +265,20 @@ export async function registerShopWithRekart(
   shop: string,
   clientId: number,
 ): Promise<RegisterShopResult> {
-  if (!REKART_BACKEND_URL) return { error: "FAILED" };
+  const base = backendUrl();
+  if (!base) return { error: "FAILED" };
 
   try {
     const res = await fetch(
-      `${REKART_BACKEND_URL}/api/integrations/shopify/connections/register`,
+      `${base}/api/integrations/shopify/connections/register`,
       {
         method: "POST",
         headers: backendHeaders(),
-        body: JSON.stringify({ external_id: shop, client_id: clientId }),
+        body: JSON.stringify({
+          shop_domain: shop,
+          client_id: clientId,
+          webhook_url: `${(process.env.SHOPIFY_APP_URL ?? '').replace(/\/$/, '')}/api/rekart-webhook`,
+        }),
         signal: AbortSignal.timeout(BACKEND_TIMEOUT_MS),
       },
     );
@@ -317,25 +338,54 @@ async function readMappingConflicts(
     }));
 }
 
+// Details for creating a brand-new Rekart product from a Shopify variant. Mirrors
+// the fields Rekart's product-create accepts; only name + price are required.
+export interface RekartProductDetails {
+  name: string;
+  price: number;
+  originalprice?: number;
+  onetime_rate?: number;
+  unit?: string;
+  brand?: string;
+  description?: string;
+  category_id?: number;
+  category_name?: string;
+  is_active?: boolean;
+  allow_subscribe?: boolean;
+  allow_onetime?: boolean;
+  multiply_factor?: number;
+}
+
+// One row in the mapping payload — either a variant linked to an existing Rekart
+// product, or a variant for which Rekart should create a new product. Unmapped
+// variants are not represented here: the caller omits them entirely.
+export type ProductMappingItem =
+  | { shopifyVariantId: string; rekartProductId: number }
+  | { shopifyVariantId: string; product: RekartProductDetails };
+
 /**
  * Push the confirmed Shopify variant ↔ Rekart product mappings to the backend so
  * it can resolve each order line item to a Rekart product directly from the
  * variant id (no checkout line-item property required).
  * POST /api/integrations/shopify/product-mapping
+ * Each row is either { shopify_variant_id, rekart_product_id } (link to an
+ * existing product) or { shopify_variant_id, product: {...} } (create a new one).
+ * Unmapped variants are excluded by the caller and never sent.
  * Best-effort: returns { success: true, conflicts } on 200 (conflicts is the
  * list of rows Rekart rejected, possibly empty), { error: "FAILED" } otherwise.
  */
 export async function pushProductMappings(
   shop: string,
-  mappings: Array<{ shopifyVariantId: string; rekartProductId: number }>,
+  mappings: ProductMappingItem[],
 ): Promise<
   { success: true; conflicts: ProductMappingConflict[] } | { error: string }
 > {
-  if (!REKART_BACKEND_URL) return { error: "FAILED" };
+  const base = backendUrl();
+  if (!base) return { error: "FAILED" };
 
   try {
     const res = await fetch(
-      `${REKART_BACKEND_URL}/api/integrations/shopify/product-mapping`,
+      `${base}/api/integrations/shopify/product-mapping`,
       {
         method: "POST",
         headers: backendHeaders(),
@@ -343,7 +393,9 @@ export async function pushProductMappings(
           shop_domain: shop,
           mappings: mappings.map((m) => ({
             shopify_variant_id: m.shopifyVariantId,
-            rekart_product_id: m.rekartProductId,
+            ...("rekartProductId" in m
+              ? { rekart_product_id: m.rekartProductId }
+              : { product: m.product }),
           })),
         }),
         signal: AbortSignal.timeout(BACKEND_TIMEOUT_MS),
@@ -367,12 +419,40 @@ export interface RekartZone {
   name: string;
 }
 
+// A Rekart subscription plan as returned by the catalog API. Kept in the backend's
+// snake_case shape because it is forwarded verbatim to the storefront widget (via
+// the app proxy), which reads these field names directly.
+export interface RekartPlan {
+  plan_id: number;
+  name: string;
+  plan_type?: string;
+  units?: number;
+  discount_percentage?: number;
+  price_per_unit?: number;
+  price?: number;
+  original_price?: number;
+  validity_days?: number;
+}
+
+// Merchant-level subscription pattern toggles from the catalog API.
+export interface RekartCatalogSettings {
+  allow_alternate_day?: boolean;
+  allow_weekly?: boolean;
+  allow_nth_day?: boolean;
+}
+
 export type RekartCatalogResult =
   | {
       products: RekartProduct[];
       slots: RekartSlot[];
       zones: RekartZone[];
+      plans: RekartPlan[];
       cacheId: string | null;
+      currency?: string;
+      currencySymbol?: string;
+      timezone?: string;
+      territoryId?: number;
+      settings: RekartCatalogSettings | null;
     }
   | { error: "FAILED" };
 
@@ -386,9 +466,10 @@ export async function fetchRekartCatalog(
   shop: string,
   cacheId?: string | null,
 ): Promise<RekartCatalogResult> {
-  if (!REKART_BACKEND_URL) return { error: "FAILED" };
+  const root = backendUrl();
+  if (!root) return { error: "FAILED" };
 
-  const base = `${REKART_BACKEND_URL}/api/integrations/shopify/catalog?shop_domain=${encodeURIComponent(shop)}`;
+  const base = `${root}/api/integrations/shopify/catalog?shop_domain=${encodeURIComponent(shop)}`;
   const url = cacheId ? `${base}&cache_id=${encodeURIComponent(cacheId)}` : base;
 
   try {
@@ -407,10 +488,17 @@ export async function fetchRekartCatalog(
         product_id: number | string | null;
         name: string;
         sku?: string | null;
+        external_product_id?: string | null;
       }>;
       slots?: RekartSlot[];
       zones?: RekartZone[];
+      plans?: RekartPlan[];
       cache_id?: string | null;
+      currency?: string;
+      currency_symbol?: string;
+      timezone?: string;
+      territory_id?: number;
+      settings?: RekartCatalogSettings;
     };
     return {
       // Drop products with a non-numeric product_id: they'd render as broken
@@ -420,11 +508,18 @@ export async function fetchRekartCatalog(
           productId: Number(p.product_id),
           name: p.name,
           sku: p.sku ?? null,
+          externalProductId: p.external_product_id ?? null,
         }))
         .filter((p) => Number.isInteger(p.productId) && p.productId > 0),
       slots: data.slots ?? [],
       zones: data.zones ?? [],
+      plans: data.plans ?? [],
       cacheId: data.cache_id ?? null,
+      currency: data.currency,
+      currencySymbol: data.currency_symbol,
+      timezone: data.timezone,
+      territoryId: data.territory_id,
+      settings: data.settings ?? null,
     };
   } catch (error) {
     console.error("[rekart] fetchRekartCatalog threw:", error);
@@ -448,11 +543,12 @@ export interface RekartShopStats {
 export async function fetchShopStats(
   shop: string,
 ): Promise<RekartShopStats | { error: "FAILED" }> {
-  if (!REKART_BACKEND_URL) return { error: "FAILED" };
+  const base = backendUrl();
+  if (!base) return { error: "FAILED" };
 
   try {
     const res = await fetch(
-      `${REKART_BACKEND_URL}/api/integrations/shopify/stats?shop_domain=${encodeURIComponent(shop)}`,
+      `${base}/api/integrations/shopify/stats?shop_domain=${encodeURIComponent(shop)}`,
       { headers: backendHeaders(), signal: AbortSignal.timeout(BACKEND_TIMEOUT_MS) },
     );
     if (!res.ok) {

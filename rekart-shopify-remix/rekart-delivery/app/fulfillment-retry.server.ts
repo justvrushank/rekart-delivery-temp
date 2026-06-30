@@ -20,7 +20,7 @@ export interface SweepResult {
   failed: number;
 }
 
-function rowToInput(row: {
+export function rowToInput(row: {
   shop: string;
   shopifyOrderId: string;
   rekartStatus: string;
@@ -40,17 +40,44 @@ function rowToInput(row: {
       company: row.trackingCompany,
     },
     occurredAt: row.occurredAt ? row.occurredAt.toISOString() : null,
-    rekartDeliveryId: row.rekartDeliveryId,
+    // Normalise the "" sentinel (stored when no delivery id was provided, so the
+    // compound-unique upsert can dedupe) back to null for the outbound payload.
+    rekartDeliveryId: row.rekartDeliveryId || null,
   };
 }
 
-/** Process all pushes that are due for retry, oldest first. */
+/**
+ * Process all pushes that are due for retry, oldest first.
+ *
+ * NOTE: the cron sweep (POST /api/fulfillment-retry-sweep) and the in-process
+ * worker (ENABLE_FULFILLMENT_RETRY_WORKER) are mutually exclusive — never run
+ * both, and never run the worker on more than one instance. The optimistic claim
+ * below guards against concurrent sweeps double-processing the same row, but the
+ * intended deployment is a single sweeper.
+ */
 export async function processDuePushes(limit = 25): Promise<SweepResult> {
-  const due = await db.fulfillmentPush.findMany({
-    where: { status: "pending", nextAttemptAt: { lte: new Date() } },
+  // Atomically claim each candidate before processing: MySQL/Prisma has no
+  // SKIP LOCKED helper, so push nextAttemptAt forward and only process rows the
+  // updateMany actually won. This stops two overlapping sweeps from both
+  // re-posting the same (non-idempotent) Shopify fulfillment event.
+  const now = new Date();
+  const candidates = await db.fulfillmentPush.findMany({
+    where: { status: "pending", nextAttemptAt: { lte: now } },
     orderBy: { nextAttemptAt: "asc" },
     take: limit,
+    select: { id: true },
   });
+  const claimUntil = new Date(Date.now() + 5 * 60_000);
+  const due = [];
+  for (const { id } of candidates) {
+    const claimed = await db.fulfillmentPush.updateMany({
+      where: { id, status: "pending", nextAttemptAt: { lte: now } },
+      data: { nextAttemptAt: claimUntil },
+    });
+    if (claimed.count === 1) {
+      due.push(await db.fulfillmentPush.findUniqueOrThrow({ where: { id } }));
+    }
+  }
 
   let succeeded = 0;
   let failed = 0;
@@ -66,6 +93,9 @@ export async function processDuePushes(limit = 25): Promise<SweepResult> {
       failed += 1;
       console.error(`[rekart] sweep: row ${row.id} threw:`, err);
     }
+    // NOTE: if applyResult throws after a successful push, the row stays pending
+    // and will be re-pushed next sweep. Shopify events are not idempotent —
+    // monitor for duplicate event:DELIVERED errors in lastError.
   }
   return { processed: due.length, succeeded, failed };
 }

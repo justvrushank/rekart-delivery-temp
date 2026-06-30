@@ -23,9 +23,10 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { authenticate } from "../shopify.server";
 import { getOnboarding } from "../onboarding.server";
-import { loginToRekart, registerShopWithRekart, REKART_BACKEND_URL } from "../rekart.server";
+import { loginToRekart, registerShopWithRekart, backendUrl } from "../rekart.server";
 import { encrypt } from "../crypto.server";
 import db from "../db.server";
+import { SkeletonSection } from "../skeleton";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -38,7 +39,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     throw redirect(`/app?${url.searchParams.toString()}`);
   }
 
-  return { backendConfigured: Boolean(REKART_BACKEND_URL) };
+  return {
+    backendConfigured: Boolean(backendUrl()),
+    // Used to hide the dev-only "Backend URL not configured" banner in prod.
+    isProduction: process.env.NODE_ENV === "production",
+  };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -81,10 +86,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // cross-tenant conflict (409 → LINKED_TO_DIFFERENT_ACCOUNT) blocks the merchant
   // before we store a connection Rekart rejects. A transient FAILED is logged but
   // does not block — the merchant still reaches the dashboard.
-  const registration = await registerShopWithRekart(
-    session.shop,
-    Number(result.clientId),
-  );
+  // Guard the numeric coercion: a non-numeric client_id would become NaN and
+  // serialize to null in the registration payload. Skip registration in that case
+  // (we still store the string id below) rather than send a bogus null.
+  const clientIdNum = Number(result.clientId);
+  const registration = Number.isFinite(clientIdNum)
+    ? await registerShopWithRekart(session.shop, clientIdNum)
+    : ({ error: "FAILED" } as const);
+  if (!Number.isFinite(clientIdNum)) {
+    console.error("[connect-rekart] non-numeric client_id; skipped registration");
+  }
   if (!("success" in registration)) {
     if (registration.error === "LINKED_TO_DIFFERENT_ACCOUNT") {
       return data(
@@ -101,18 +112,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     );
   }
 
-  await db.shopOnboarding.update({
+  // Upsert (not update): if the onboarding row is somehow absent, update() would
+  // throw Prisma P2025. Mirrors the updateMany used elsewhere by tolerating a
+  // missing row.
+  const connectionData = {
+    rekartMerchantId: result.clientId,
+    // Encrypt the access token at rest; decrypted only when calling Rekart.
+    rekartAccessToken: encrypt(result.accessToken),
+    // Store expiry (ISO 8601 from the login response) for expiry handling.
+    rekartTokenExpiresAt: result.expiresAt ? new Date(result.expiresAt) : null,
+    connected: true,
+    // Fresh token — clear any prior "expired/invalid" flag.
+    tokenInvalid: false,
+  };
+  await db.shopOnboarding.upsert({
     where: { shop: session.shop },
-    data: {
-      rekartMerchantId: result.clientId,
-      // Encrypt the access token at rest; decrypted only when calling Rekart.
-      rekartAccessToken: encrypt(result.accessToken),
-      // Store expiry (ISO 8601 from the login response) for expiry handling.
-      rekartTokenExpiresAt: result.expiresAt ? new Date(result.expiresAt) : null,
-      connected: true,
-      // Fresh token — clear any prior "expired/invalid" flag.
-      tokenInvalid: false,
-    },
+    create: { shop: session.shop, ...connectionData },
+    update: connectionData,
   });
 
   // Linked — go to the dashboard, keeping the embedded params.
@@ -121,7 +137,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function ConnectRekart() {
-  const { backendConfigured } = useLoaderData<typeof loader>();
+  const { backendConfigured, isProduction } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const submit = useSubmit();
@@ -152,7 +168,7 @@ export default function ConnectRekart() {
           </s-banner>
         )}
 
-        {!backendConfigured && (
+        {!backendConfigured && !isProduction && (
           <s-banner tone="warning" heading="Backend URL not configured">
             <s-paragraph>
               Set <code>REKART_BACKEND_URL</code> so the app can sign in to
@@ -201,6 +217,14 @@ export default function ConnectRekart() {
           automatically.
         </s-paragraph>
       </s-section>
+    </s-page>
+  );
+}
+
+export function HydrateFallback() {
+  return (
+    <s-page heading="Connect Rekart">
+      <SkeletonSection lines={3} />
     </s-page>
   );
 }

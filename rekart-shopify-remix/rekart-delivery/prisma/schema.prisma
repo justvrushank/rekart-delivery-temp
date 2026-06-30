@@ -8,9 +8,17 @@ generator client {
 // Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
 // enough when changing adapters.
 // See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+// ⚠️  This is the CANONICAL schema: provider = "postgresql" (Docker + production).
+// The committed migrations and migration_lock.toml are PostgreSQL. Used by the
+// build, the Docker image, and `prisma migrate deploy`. No @db.Text is needed:
+// PostgreSQL maps Prisma `String` to unbounded TEXT by default.
+//
+// Local non-Docker dev uses a SEPARATE sqlite mirror: prisma/schema.sqlite.prisma
+// (provider = "sqlite"). Prisma forbids env() in `provider`, so the two providers
+// cannot share one file. KEEP THE TWO SCHEMAS IN SYNC when changing models.
+// Local dev: `npm run setup:local` (generate + db push against schema.sqlite.prisma).
 datasource db {
-  // TODO: restore mysql provider and @db.Text before production deploy
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -55,7 +63,7 @@ model ShopOnboarding {
   // Rekart account link (set on the connect-rekart screen). rekartMerchantId is
   // the Rekart client_id; rekartAccessToken is the JWT issued at login.
   rekartMerchantId   String?
-  // Encrypted (AES-256-GCM) JWT — well over MySQL's default VARCHAR(191); needs TEXT.
+  // Encrypted (AES-256-GCM) JWT. PostgreSQL String -> TEXT, so no length limit.
   rekartAccessToken  String?
   // Set when the Rekart backend rejects the stored token (401); drives the
   // "reconnect" banner. Cleared once the token works again.
@@ -68,8 +76,17 @@ model ShopOnboarding {
   rekartTokenExpiresAt DateTime?
   // CSRF state for the planned Rekart OAuth 2.0 authorization-code flow.
   rekartOAuthState   String?
-  // NOTE: when reverting SQLite hack, keep this field and restore @db.Text on long fields
   rekartCacheId String? // cache_id from Rekart catalog API — only changes when admin updates catalog
+  // Shop-level metadata returned by the catalog API (GET .../catalog). Cached so
+  // the UI can show currency/timezone without re-fetching.
+  rekartCurrency        String?
+  rekartCurrencySymbol  String?
+  rekartTimezone        String?
+  rekartTerritoryId     Int?
+  // Which subscription delivery patterns the merchant allows (from catalog settings).
+  allowAlternateDay   Boolean  @default(true)
+  allowWeekly         Boolean  @default(true)
+  allowNthDay         Boolean  @default(true)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 }

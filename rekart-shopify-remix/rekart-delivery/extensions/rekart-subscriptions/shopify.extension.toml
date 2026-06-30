@@ -1,0 +1,8 @@
+api_version = "2025-07"
+name = "rekart-subscriptions"
+
+[[extensions]]
+type = "theme"
+name = "Rekart Subscriptions"
+handle = "rekart-subscriptions"
+uid = "bdcee638-cb8b-88b3-6f79-c7ed806f0fc7350e1ce3"

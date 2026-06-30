@@ -33,7 +33,7 @@ export default function App() {
           <s-link href="/app/onboarding">Setup</s-link>
         )}
         {!onboardingComplete && (
-          <s-link href="/app/pending-setup">Account status</s-link>
+          <s-link href="/app/pending-setup">Application Status</s-link>
         )}
         <s-link href="/app/settings">Settings</s-link>
       </s-app-nav>

@@ -5,10 +5,10 @@ import db from "./db.server";
 import {
   pushFulfillmentStatus,
   applyResult,
-  type PushInput,
   type PushResult,
 } from "./fulfillment.server";
-import { type RekartStatus, isRekartStatus } from "./fulfillment-status";
+import { rowToInput } from "./fulfillment-retry.server";
+import { isRekartStatus } from "./fulfillment-status";
 import { PUSH_STATUSES } from "./sync-log.constants";
 
 export interface SyncLogFilters {
@@ -43,19 +43,9 @@ export async function retryPushNow(shop: string, pushId: string): Promise<PushRe
   const row = await db.fulfillmentPush.findFirst({ where: { id: pushId, shop } });
   if (!row) return { ok: false, error: "push not found" };
 
-  const input: PushInput = {
-    shop: row.shop,
-    shopifyOrderId: row.shopifyOrderId,
-    status: row.rekartStatus as RekartStatus,
-    tracking: {
-      number: row.trackingNumber,
-      url: row.trackingUrl,
-      company: row.trackingCompany,
-    },
-    occurredAt: row.occurredAt ? row.occurredAt.toISOString() : null,
-    rekartDeliveryId: row.rekartDeliveryId,
-  };
-  const result = await pushFulfillmentStatus(input);
+  // Reuse the shared mapper so the "" → null delivery-id normalization stays in
+  // one place (it previously drifted: this path passed "" verbatim).
+  const result = await pushFulfillmentStatus(rowToInput(row));
   await applyResult(row.id, row.attempts + 1, result);
   return result;
 }

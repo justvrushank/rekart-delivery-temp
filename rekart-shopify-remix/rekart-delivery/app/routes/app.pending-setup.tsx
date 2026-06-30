@@ -9,10 +9,12 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { getOnboarding } from "../onboarding.server";
 import {
+  BUSINESS_CATEGORIES,
   DELIVERY_OPS,
   ORDER_VOLUMES,
   SUBSCRIBER_COUNTS,
 } from "../onboarding-options";
+import { SkeletonSection } from "../skeleton";
 
 const REKART_URL = "https://rekart.io";
 const SUPPORT_URL = "https://rekart.io/support";
@@ -22,13 +24,22 @@ const SUPPORT_URL = "https://rekart.io/support";
 const WHATSAPP_URL =
   process.env.REKART_WHATSAPP_URL || "https://wa.me/91XXXXXXXXXX";
 
-// Map stored option codes back to their human-readable labels for display.
+// Map a stored option code back to its human-readable label for display.
+// Accepts both `{ value, label }` option lists (ORDER_VOLUMES, etc.) and plain
+// string lists (BUSINESS_CATEGORIES), where the value is its own label.
 function labelFor(
-  options: readonly { value: string; label: string }[],
+  options: readonly ({ value: string; label: string } | string)[],
   value: string | null | undefined,
 ): string {
   if (!value) return "—";
-  return options.find((o) => o.value === value)?.label ?? value;
+  for (const option of options) {
+    if (typeof option === "string") {
+      if (option === value) return option;
+    } else if (option.value === value) {
+      return option.label;
+    }
+  }
+  return value;
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -90,7 +101,10 @@ export default function PendingSetup() {
 
       <s-section heading="Your details">
         <s-stack direction="block" gap="small">
-          <DetailRow label="Category" value={onboarding.businessCategory} />
+          <DetailRow
+            label="Category"
+            value={labelFor(BUSINESS_CATEGORIES, onboarding.businessCategory)}
+          />
           <DetailRow label="Country" value={onboarding.country} />
           <DetailRow
             label="Order volume"
@@ -122,6 +136,14 @@ export default function PendingSetup() {
           </s-button>
         </s-stack>
       </s-section>
+    </s-page>
+  );
+}
+
+export function HydrateFallback() {
+  return (
+    <s-page heading="Setup">
+      <SkeletonSection lines={3} />
     </s-page>
   );
 }

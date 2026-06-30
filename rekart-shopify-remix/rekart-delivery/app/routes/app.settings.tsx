@@ -12,7 +12,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { authenticate } from "../shopify.server";
 import { getOnboarding } from "../onboarding.server";
-import { fetchRekartCatalog, forwardToBackend, REKART_BACKEND_URL, type RekartSlot } from "../rekart.server";
+import { fetchRekartCatalog, forwardToBackend, backendUrl, type RekartSlot } from "../rekart.server";
 import db from "../db.server";
 import { SkeletonSection } from "../skeleton";
 
@@ -45,7 +45,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     onboarding,
     slots,
     defaultSlotId: onboarding?.defaultSlotId ?? null,
-    backendConfigured: Boolean(REKART_BACKEND_URL),
+    backendConfigured: Boolean(backendUrl()),
     // Used to hide the dev-only "Backend URL not configured" banner in prod.
     isProduction: process.env.NODE_ENV === "production",
     supportUrl: SUPPORT_URL,
@@ -86,10 +86,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       );
     }
     // Verify the slot actually exists in the merchant's Rekart catalog before
-    // saving — guards against stale/forged ids.
-    const catalog = await fetchRekartCatalog(session.shop);
-    const slots = "error" in catalog ? [] : catalog.slots;
-    if (!slots.some((s) => s.slot_id === slotId)) {
+    // saving — guards against stale/forged ids. Pass the stored cache_id so the
+    // backend can short-circuit. Distinguish "couldn't reach Rekart to verify"
+    // (503, try again) from a genuinely invalid slot (422) — failing closed on a
+    // transient blip would reject a valid slot.
+    const onboarding = await getOnboarding(session.shop);
+    const catalog = await fetchRekartCatalog(session.shop, onboarding?.rekartCacheId);
+    if ("error" in catalog) {
+      return data(
+        {
+          disconnected: false,
+          slotSaved: false,
+          error: "Couldn't reach Rekart to verify the slot. Please try again.",
+        },
+        { status: 503 },
+      );
+    }
+    if (!catalog.slots.some((s) => s.slot_id === slotId)) {
       return data(
         { disconnected: false, slotSaved: false, error: "Invalid slot selected." },
         { status: 422 },

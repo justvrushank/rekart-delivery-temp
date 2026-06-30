@@ -2,13 +2,13 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { redirect, useLoaderData, useNavigate, useSearchParams } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { getOnboarding } from "../onboarding.server";
 import {
-  REKART_BACKEND_URL,
+  backendUrl,
   fetchShopStats,
   registerShopWithRekart,
   fetchRekartCatalog,
@@ -72,10 +72,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // means registration/catalog never completed, so re-attempt them silently.
   const [rawStats, lastDeadPush] = await Promise.all([
     fetchShopStats(session.shop),
-    db.fulfillmentPush.findFirst({
-      where: { shop: session.shop, status: "dead" },
-      orderBy: { updatedAt: "desc" },
-    }),
+    db.fulfillmentPush
+      .findFirst({
+        where: { shop: session.shop, status: "dead" },
+        orderBy: { updatedAt: "desc" },
+      })
+      .catch((e) => {
+        console.error("[dashboard] dead-push lookup failed:", e);
+        return null;
+      }),
     onboarding.rekartMerchantId != null && onboarding.rekartCacheId == null
       ? healRekartConnection(session.shop, onboarding.rekartMerchantId)
       : Promise.resolve(),
@@ -132,7 +137,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     lastSyncError,
     tokenInvalid,
     tokenExpiringSoon,
-    backendConfigured: Boolean(REKART_BACKEND_URL),
+    backendConfigured: Boolean(backendUrl()),
   };
 };
 
@@ -145,7 +150,15 @@ export function HydrateFallback() {
   );
 }
 
-function StatCard({ label, value }: { label: string; value: string }) {
+function StatCard({
+  label,
+  value,
+  footer,
+}: {
+  label: string;
+  value: string;
+  footer?: ReactNode;
+}) {
   return (
     <s-box
       padding="base"
@@ -156,6 +169,7 @@ function StatCard({ label, value }: { label: string; value: string }) {
       <s-stack direction="block" gap="small">
         <s-text color="subdued">{label}</s-text>
         <s-heading>{value}</s-heading>
+        {footer}
       </s-stack>
     </s-box>
   );
@@ -287,8 +301,16 @@ export default function Dashboard() {
           gap="base"
         >
           <StatCard label="Orders synced to Rekart" value={numberFmt(stats?.ordersImported)} />
-          <StatCard label="Sync errors" value={numberFmt(stats?.failed)} />
-          <StatCard label="Last synced" value={lastSynced} />
+          <StatCard
+            label="Sync errors"
+            value={numberFmt(stats?.failed)}
+            footer={
+              stats && stats.failed > 0 ? (
+                <s-link href={syncLogHref}>View delivery history</s-link>
+              ) : undefined
+            }
+          />
+          <StatCard label="Last updated" value={lastSynced} />
         </s-grid>
       </s-section>
 

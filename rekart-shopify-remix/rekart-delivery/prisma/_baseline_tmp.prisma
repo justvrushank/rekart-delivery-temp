@@ -1,0 +1,147 @@
+// TEMPORARY schema used only to generate the MySQL production baseline migration
+// via `prisma migrate diff`. Mirrors schema.prisma but with provider=mysql and
+// the @db.Text annotations restored. Deleted after the migration is generated.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = "mysql://user:password@localhost:3306/rekart_shopify"
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+
+  @@index([shop])
+}
+
+model ShopOnboarding {
+  shop             String   @id
+  businessCategory String?
+  country          String?
+  orderVolume      String?
+  subscriberCount  String?
+  deliveryOps      String?
+  completed        Boolean  @default(false)
+  connected        Boolean  @default(false)
+  existingRekartUser Boolean?
+  rekartMerchantId   String?
+  rekartAccessToken  String?  @db.Text
+  tokenInvalid       Boolean  @default(false)
+  defaultSlotId      Int?
+  rekartTokenExpiresAt DateTime?
+  rekartOAuthState   String?
+  rekartCacheId String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model FulfillmentPush {
+  id                   String    @id @default(cuid())
+  shop                 String
+  shopifyOrderId       String
+  rekartStatus         String
+  rekartDeliveryId     String?
+  mappedAction         String
+  status               String    @default("pending")
+  attempts             Int       @default(0)
+  lastError            String?   @db.Text
+  shopifyFulfillmentId String?
+  trackingNumber       String?
+  trackingUrl          String?   @db.Text
+  trackingCompany      String?
+  occurredAt           DateTime?
+  nextAttemptAt        DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@unique([shop, shopifyOrderId, rekartStatus, rekartDeliveryId])
+  @@index([status, nextAttemptAt])
+  @@index([shop, createdAt])
+}
+
+model GdprRequest {
+  id         Int       @id @default(autoincrement())
+  shop       String
+  topic      String
+  payload    String    @db.Text
+  status     String    @default("pending")
+  createdAt  DateTime  @default(now())
+  retriedAt  DateTime?
+  retryCount Int       @default(0)
+
+  @@index([shop, status])
+}
+
+model ShopifyProductLink {
+  id                  String   @id @default(cuid())
+  shopId              String
+  shopifyVariantId    String
+  shopifyProductTitle String   @db.Text
+  shopifySku          String?
+  rekartProductId     Int
+  rekartProductName   String?  @db.Text
+  matchedAuto         Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([shopId, shopifyVariantId])
+  @@index([shopId])
+}
+
+model FulfillmentLink {
+  id                   String   @id @default(cuid())
+  shop                 String
+  shopifyOrderId       String
+  shopifyFulfillmentId String
+  createdAt            DateTime @default(now())
+
+  @@unique([shop, shopifyOrderId])
+}
+
+model ShopifyOrderSync {
+  id             String    @id @default(cuid())
+  shop           String
+  shopifyOrderId String
+  rekartOrderId  String?
+  status         String    @default("pending")
+  attempts       Int       @default(0)
+  lastError      String?   @db.Text
+  nextAttemptAt  DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([shop, shopifyOrderId])
+  @@index([status, nextAttemptAt])
+  @@index([shop, createdAt])
+}
+
+model ShopifyCustomerSync {
+  id                String   @id @default(cuid())
+  shop              String
+  shopifyCustomerId String
+  rekartUserId      String?
+  rekartAddressId   String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([shop, shopifyCustomerId])
+  @@index([shop])
+}

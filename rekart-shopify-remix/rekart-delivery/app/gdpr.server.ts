@@ -21,6 +21,52 @@ export type GdprTopic = keyof typeof GDPR_PATHS;
 const MAX_RETRIES = 10;
 
 /**
+ * Record a GDPR request durably. This is the synchronous step a webhook handler
+ * must await before returning 200, so the row survives even if the process exits
+ * immediately after responding. Returns the created row.
+ */
+export async function recordGdpr(
+  shop: string,
+  topic: GdprTopic,
+  payload: unknown,
+) {
+  return db.gdprRequest.create({
+    data: { shop, topic, payload: JSON.stringify(payload ?? null) },
+  });
+}
+
+/**
+ * Forward an already-recorded GDPR row to the Rekart backend, marking it
+ * "forwarded" on success. Safe to run in the background: on failure the row is
+ * left "pending" for the retry sweep. Returns whether the forward succeeded.
+ */
+export async function forwardGdprRow(row: {
+  id: number;
+  shop: string;
+  topic: string;
+  payload: string;
+}): Promise<boolean> {
+  const path = GDPR_PATHS[row.topic as GdprTopic];
+  if (!path) return false; // unknown topic — nothing to forward
+
+  let payload: unknown = null;
+  try {
+    payload = JSON.parse(row.payload);
+  } catch {
+    payload = null;
+  }
+
+  const ok = await forwardToBackend(path, { shop: row.shop, payload });
+  if (ok) {
+    await db.gdprRequest.update({
+      where: { id: row.id },
+      data: { status: "forwarded", retriedAt: new Date() },
+    });
+  }
+  return ok;
+}
+
+/**
  * Record a GDPR request durably, then attempt to forward it. Returns whether
  * the forward succeeded. On failure the row is left "pending" for the sweep.
  */
@@ -29,18 +75,8 @@ export async function recordAndForwardGdpr(
   topic: GdprTopic,
   payload: unknown,
 ): Promise<boolean> {
-  const row = await db.gdprRequest.create({
-    data: { shop, topic, payload: JSON.stringify(payload ?? null) },
-  });
-
-  const ok = await forwardToBackend(GDPR_PATHS[topic], { shop, payload });
-  if (ok) {
-    await db.gdprRequest.update({
-      where: { id: row.id },
-      data: { status: "forwarded", retriedAt: new Date() },
-    });
-  }
-  return ok;
+  const row = await recordGdpr(shop, topic, payload);
+  return forwardGdprRow(row);
 }
 
 /**
@@ -60,22 +96,14 @@ export async function processPendingGdpr(): Promise<{
   let failed = 0;
 
   for (const row of pending) {
-    const path = GDPR_PATHS[row.topic as GdprTopic];
-    if (!path) continue; // unknown topic — skip rather than loop forever
+    // Skip unknown topics rather than looping forever (forwardGdprRow would also
+    // return false for these, but that would wrongly bump retryCount).
+    if (!GDPR_PATHS[row.topic as GdprTopic]) continue;
 
-    let payload: unknown = null;
-    try {
-      payload = JSON.parse(row.payload);
-    } catch {
-      payload = null;
-    }
-
-    const ok = await forwardToBackend(path, { shop: row.shop, payload });
+    // Reuse the shared forward (parse + POST + mark "forwarded" on success)
+    // instead of duplicating it here; add only the retry bookkeeping on failure.
+    const ok = await forwardGdprRow(row);
     if (ok) {
-      await db.gdprRequest.update({
-        where: { id: row.id },
-        data: { status: "forwarded", retriedAt: new Date() },
-      });
       succeeded += 1;
     } else {
       // Give up after MAX_RETRIES so an unreachable backend can't loop forever.

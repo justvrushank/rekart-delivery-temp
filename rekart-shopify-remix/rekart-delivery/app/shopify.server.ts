@@ -31,6 +31,14 @@ const shopify = shopifyApp({
           deliveryMethod: DeliveryMethod.Http,
           callbackUrl: `${REKART_BACKEND_URL}/webhooks/shopify/orders/create`,
         },
+        ORDERS_UPDATED: {
+          deliveryMethod: DeliveryMethod.Http,
+          callbackUrl: `${REKART_BACKEND_URL}/webhooks/shopify/orders/updated`,
+        },
+        ORDERS_CANCELLED: {
+          deliveryMethod: DeliveryMethod.Http,
+          callbackUrl: `${REKART_BACKEND_URL}/webhooks/shopify/orders/cancelled`,
+        },
         CUSTOMERS_CREATE: {
           deliveryMethod: DeliveryMethod.Http,
           callbackUrl: `${REKART_BACKEND_URL}/webhooks/shopify/customers/create`,

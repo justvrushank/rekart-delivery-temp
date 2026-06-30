@@ -21,7 +21,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { authenticate } from "../shopify.server";
 import { getRecentPushes, parseFilters, retryPushNow } from "../sync-log.server";
-import { PUSH_STATUSES } from "../sync-log.constants";
+import { PUSH_STATUSES, PUSH_STATUS_LABELS } from "../sync-log.constants";
 import { REKART_STATUSES } from "../fulfillment-status";
 import { SkeletonSection } from "../skeleton";
 
@@ -33,6 +33,14 @@ const ERROR_LABELS: Record<string, string> = {
   AUTH_FAILED: "Rekart connection expired",
   MISSING_PHONE: "Customer phone number missing",
   NO_DEFAULT_SLOT: "No delivery slot configured",
+  TIMEOUT: "Rekart timed out — will retry automatically",
+  RATE_LIMITED: "Too many requests — will retry shortly",
+  ORDER_CANCELLED: "Order is cancelled — cannot update fulfillment",
+  // Fulfillment-flow errors (stored verbatim as lastError, so keyed by full string).
+  "no fulfillment found for order; cannot post event yet":
+    "No fulfillment exists yet — will retry",
+  "Could not create fulfillment": "Could not create fulfillment on Shopify",
+  "no open fulfillment orders to fulfill": "Order has no fulfillable items",
 };
 
 function friendlyError(code: string): string {
@@ -125,7 +133,7 @@ export default function SyncLog() {
               <s-option value="">All statuses</s-option>
               {PUSH_STATUSES.map((s) => (
                 <s-option key={s} value={s}>
-                  {s}
+                  {PUSH_STATUS_LABELS[s]}
                 </s-option>
               ))}
             </s-select>
@@ -151,13 +159,28 @@ export default function SyncLog() {
         </form>
       </s-section>
 
-      <s-section heading={`Recent events (${pushes.length})`}>
+      <s-section
+        heading={
+          pushes.length === 0
+            ? "Delivery history"
+            : `Recent events (${pushes.length})`
+        }
+      >
         {pushes.length === 0 ? (
-          <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
-            <s-stack direction="block" gap="small">
+          // Polaris web components have no <s-empty-state> (that's Polaris React);
+          // compose the same look from real components: illustration + heading +
+          // body copy.
+          <s-box padding="large" borderRadius="base" background="subdued">
+            <s-stack direction="block" gap="base">
+              <s-image
+                src="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+                alt=""
+                inlineSize="auto"
+              />
               <s-heading>No delivery history yet</s-heading>
               <s-paragraph>
-                Orders will appear here once they're synced to Rekart.
+                Orders will appear here once they're synced to Rekart. Once
+                syncing starts, you'll see delivery status updates for each order.
               </s-paragraph>
             </s-stack>
           </s-box>

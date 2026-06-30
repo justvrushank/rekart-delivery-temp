@@ -1,0 +1,414 @@
+{%- assign rekart_product_id = product.selected_or_first_available_variant.metafields.rekart.product_id -%}
+{%- if rekart_product_id != blank -%}
+
+<div id="rekart-widget"
+     data-shop="{{ shop.permanent_domain }}"
+     data-product-id="{{ product.id }}"
+     data-variant-id="{{ product.selected_or_first_available_variant.id }}"
+     data-rekart-product-id="{{ rekart_product_id }}">
+
+  <!-- Purchase type selector -->
+  <div class="rekart-purchase-type">
+    <button type="button" class="rekart-type-btn active" data-type="onetime" id="rekart-btn-onetime">
+      Buy Once
+    </button>
+    <button type="button" class="rekart-type-btn" data-type="subscribe" id="rekart-btn-subscribe">
+      Subscribe & Save
+    </button>
+  </div>
+
+  <!-- Subscription panel — hidden until Subscribe is clicked -->
+  <div id="rekart-subscribe-panel" style="display:none">
+
+    <!-- Loading state -->
+    <div id="rekart-loading" style="padding:16px;text-align:center;color:#666">
+      Loading subscription options...
+    </div>
+
+    <!-- Plans section — populated by JS -->
+    <div id="rekart-plans-section" style="display:none">
+      <div class="rekart-section-label">Available Plans</div>
+      <div id="rekart-plans-list"></div>
+    </div>
+
+    <!-- Pattern selector — shown after plan selected -->
+    <div id="rekart-pattern-section" style="display:none">
+      <div class="rekart-section-label">Delivery Frequency</div>
+      <div class="rekart-pattern-btns">
+        <button type="button" class="rekart-pattern-btn active" data-pattern="daily">Daily</button>
+        <button type="button" class="rekart-pattern-btn" data-pattern="alternate" id="rekart-btn-alternate">Alternate Day</button>
+        <button type="button" class="rekart-pattern-btn" data-pattern="weekly" id="rekart-btn-weekly">Weekly</button>
+        <button type="button" class="rekart-pattern-btn" data-pattern="nth_day" id="rekart-btn-nth">Nth Day</button>
+      </div>
+
+      <!-- Daily — quantity only -->
+      <div id="rekart-daily-options" class="rekart-pattern-options">
+        <div class="rekart-field">
+          <label class="rekart-label">Quantity Per Delivery</label>
+          <div class="rekart-qty-ctrl">
+            <button type="button" id="rekart-qty-minus">−</button>
+            <input type="number" id="rekart-qty" value="1" min="1" max="20">
+            <button type="button" id="rekart-qty-plus">+</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Weekly — day checkboxes with quantity per day -->
+      <div id="rekart-weekly-options" class="rekart-pattern-options" style="display:none">
+        <div class="rekart-field">
+          <label class="rekart-label">Select Days</label>
+          <div id="rekart-weekly-days">
+            {%- assign days = "Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday" | split: "," -%}
+            {%- for day in days -%}
+            <div class="rekart-day-row">
+              <label class="rekart-day-label">
+                <input type="checkbox" class="rekart-day-cb" data-day="{{ day | downcase }}" checked>
+                {{ day }}
+              </label>
+              <div class="rekart-qty-ctrl rekart-day-qty">
+                <button type="button" class="rekart-day-minus">−</button>
+                <input type="number" class="rekart-day-qty-input" data-day="{{ day | downcase }}" value="1" min="0" max="20">
+                <button type="button" class="rekart-day-plus">+</button>
+              </div>
+            </div>
+            {%- endfor -%}
+          </div>
+        </div>
+      </div>
+
+      <!-- Nth Day — interval dropdown -->
+      <div id="rekart-nth-options" class="rekart-pattern-options" style="display:none">
+        <div class="rekart-field">
+          <label class="rekart-label">Deliver Every</label>
+          <select id="rekart-nth-interval" class="rekart-select">
+            <option value="2">Every 2 days</option>
+            <option value="3" selected>Every 3 days</option>
+            <option value="4">Every 4 days</option>
+            <option value="5">Every 5 days</option>
+            <option value="6">Every 6 days</option>
+            <option value="7">Every 7 days</option>
+          </select>
+          <p class="rekart-note" id="rekart-nth-note"></p>
+        </div>
+        <div class="rekart-field">
+          <label class="rekart-label">Quantity Per Delivery</label>
+          <div class="rekart-qty-ctrl">
+            <button type="button" id="rekart-nth-qty-minus">−</button>
+            <input type="number" id="rekart-nth-qty" value="1" min="1" max="20">
+            <button type="button" id="rekart-nth-qty-plus">+</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Start date -->
+      <div class="rekart-field" id="rekart-date-section">
+        <label class="rekart-label">Select Start Date</label>
+        <input type="date" id="rekart-start-date" class="rekart-date-input">
+        <p id="rekart-end-date-note" class="rekart-note" style="display:none"></p>
+      </div>
+
+      <!-- Delivery instructions -->
+      <div class="rekart-field">
+        <label class="rekart-label">Delivery Instructions</label>
+        <div class="rekart-instructions">
+          <label><input type="checkbox" class="rekart-instr" value="keep_in_bag"> Keep in Bag</label>
+          <label><input type="checkbox" class="rekart-instr" value="hand_delivery"> Hand Delivery</label>
+          <label><input type="checkbox" class="rekart-instr" value="ring_bell"> Ring the bell and leave at the door</label>
+          <label><input type="checkbox" class="rekart-instr" value="no_ring"> Do not ring the bell and leave at the door</label>
+          <label><input type="checkbox" class="rekart-instr" value="other"> Other</label>
+        </div>
+      </div>
+
+    </div><!-- /rekart-pattern-section -->
+
+  </div><!-- /rekart-subscribe-panel -->
+
+  <!-- Hidden inputs for line item properties -->
+  <input type="hidden" name="properties[rekart_purchase_type]" id="rekart_purchase_type" value="onetime">
+  <input type="hidden" name="properties[rekart_plan_id]" id="rekart_plan_id" value="">
+  <input type="hidden" name="properties[rekart_plan_name]" id="rekart_plan_name" value="">
+  <input type="hidden" name="properties[rekart_pattern]" id="rekart_pattern" value="">
+  <input type="hidden" name="properties[rekart_quantity_per_delivery]" id="rekart_quantity_per_delivery" value="1">
+  <input type="hidden" name="properties[rekart_start_date]" id="rekart_start_date" value="">
+  <input type="hidden" name="properties[rekart_weekly_days]" id="rekart_weekly_days" value="">
+  <input type="hidden" name="properties[rekart_nth_interval]" id="rekart_nth_interval" value="">
+  <input type="hidden" name="properties[rekart_instructions]" id="rekart_instructions" value="">
+
+</div>
+
+<style>
+#rekart-widget { margin: 16px 0; font-family: inherit; }
+.rekart-purchase-type { display: flex; gap: 8px; margin-bottom: 16px; }
+.rekart-type-btn { flex: 1; padding: 12px; border: 2px solid #e0e0e0; border-radius: 8px; background: white; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.2s; }
+.rekart-type-btn.active { border-color: #008060; background: #f0faf6; color: #008060; }
+#rekart-subscribe-panel { border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin-top: 8px; }
+.rekart-section-label { font-weight: 600; font-size: 14px; margin-bottom: 12px; color: #333; }
+#rekart-plans-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.rekart-plan-card { padding: 12px 16px; border: 2px solid #e0e0e0; border-radius: 8px; cursor: pointer; transition: all 0.2s; position: relative; }
+.rekart-plan-card.selected { border-color: #008060; background: #f0faf6; }
+.rekart-plan-badge { position: absolute; top: -8px; left: 12px; background: #008060; color: white; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; }
+.rekart-plan-name { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+.rekart-plan-price { font-size: 13px; color: #666; }
+.rekart-plan-price s { color: #999; margin-right: 4px; }
+.rekart-pattern-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.rekart-pattern-btn { padding: 8px 16px; border: 1px solid #e0e0e0; border-radius: 20px; background: white; cursor: pointer; font-size: 13px; transition: all 0.2s; }
+.rekart-pattern-btn.active { border-color: #008060; background: #008060; color: white; }
+.rekart-pattern-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.rekart-field { margin-bottom: 16px; }
+.rekart-label { display: block; font-weight: 500; font-size: 14px; margin-bottom: 8px; color: #333; }
+.rekart-qty-ctrl { display: flex; align-items: center; gap: 8px; }
+.rekart-qty-ctrl button { width: 32px; height: 32px; border: 1px solid #e0e0e0; border-radius: 4px; background: white; cursor: pointer; font-size: 16px; line-height: 1; }
+.rekart-qty-ctrl input { width: 60px; text-align: center; border: 1px solid #e0e0e0; border-radius: 4px; padding: 6px; font-size: 14px; }
+.rekart-day-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
+.rekart-day-label { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+.rekart-day-qty { transform: scale(0.85); transform-origin: right; }
+.rekart-select { width: 100%; padding: 8px 12px; border: 1px solid #e0e0e0; border-radius: 4px; font-size: 14px; }
+.rekart-date-input { width: 100%; padding: 8px 12px; border: 1px solid #e0e0e0; border-radius: 4px; font-size: 14px; box-sizing: border-box; }
+.rekart-note { font-size: 12px; color: #e67e22; margin: 4px 0 0; }
+.rekart-instructions label { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 14px; cursor: pointer; font-weight: normal; }
+</style>
+
+<script>
+(function() {
+  const widget = document.getElementById('rekart-widget');
+  if (!widget) return;
+
+  const shop = widget.dataset.shop;
+  let plansData = null;
+  let selectedPlanId = null;
+  let currentPattern = 'daily';
+
+  // Set tomorrow as default start date
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = tomorrow.toISOString().split('T')[0];
+  const dateInput = document.getElementById('rekart-start-date');
+  if (dateInput) {
+    dateInput.min = tomorrowStr;
+    dateInput.value = tomorrowStr;
+    document.getElementById('rekart_start_date').value = tomorrowStr;
+  }
+
+  // Purchase type toggle
+  document.querySelectorAll('.rekart-type-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('.rekart-type-btn').forEach(b => b.classList.remove('active'));
+      this.classList.add('active');
+      const type = this.dataset.type;
+      document.getElementById('rekart_purchase_type').value = type;
+      const panel = document.getElementById('rekart-subscribe-panel');
+      panel.style.display = type === 'subscribe' ? 'block' : 'none';
+      if (type === 'subscribe' && !plansData) {
+        loadPlans();
+      }
+    });
+  });
+
+  // Load plans from app proxy
+  async function loadPlans() {
+    const loading = document.getElementById('rekart-loading');
+    loading.style.display = 'block';
+    try {
+      const res = await fetch('/apps/rekart/plans?shop=' + shop);
+      const data = await res.json();
+      plansData = data;
+      loading.style.display = 'none';
+      renderPlans(data);
+      applySettings(data.settings);
+    } catch (e) {
+      loading.textContent = 'Could not load subscription options. Please try again.';
+    }
+  }
+
+  function renderPlans(data) {
+    const section = document.getElementById('rekart-plans-section');
+    const list = document.getElementById('rekart-plans-list');
+    list.innerHTML = '';
+
+    if (!data.plans || data.plans.length === 0) {
+      // No plans — go straight to pattern selector
+      document.getElementById('rekart-pattern-section').style.display = 'block';
+      return;
+    }
+
+    data.plans.forEach((plan, i) => {
+      const card = document.createElement('div');
+      card.className = 'rekart-plan-card' + (i === 0 ? ' selected' : '');
+      card.dataset.planId = plan.plan_id;
+      card.dataset.planName = plan.name;
+      card.dataset.units = plan.units ?? '';
+
+      const discountPct = plan.discount_percentage ?? 0;
+      const pricePerUnit = plan.price_per_unit ?? plan.price ?? 0;
+      const originalPrice = plan.original_price ?? pricePerUnit;
+
+      card.innerHTML = `
+        ${discountPct > 0 ? `<span class="rekart-plan-badge">${discountPct}% OFF</span>` : ''}
+        <div class="rekart-plan-name">${plan.name}</div>
+        <div class="rekart-plan-price">
+          ${discountPct > 0 ? `<s>${data.currencySymbol}${originalPrice}</s>` : ''}
+          ${data.currencySymbol}${pricePerUnit}/Unit${plan.units ? `(s) · ${plan.units} Units` : ''}
+        </div>
+      `;
+      card.addEventListener('click', () => selectPlan(card, plan));
+      list.appendChild(card);
+    });
+
+    // Auto-select first plan
+    if (data.plans.length > 0) {
+      selectPlan(list.firstChild, data.plans[0]);
+    }
+
+    section.style.display = 'block';
+  }
+
+  function selectPlan(card, plan) {
+    document.querySelectorAll('.rekart-plan-card').forEach(c => c.classList.remove('selected'));
+    card.classList.add('selected');
+    selectedPlanId = plan.plan_id;
+    document.getElementById('rekart_plan_id').value = plan.plan_id;
+    document.getElementById('rekart_plan_name').value = plan.name;
+    document.getElementById('rekart-pattern-section').style.display = 'block';
+    updateEndDateNote(plan);
+  }
+
+  function applySettings(settings) {
+    if (!settings) return;
+    if (!settings.allowAlternateDay) {
+      const btn = document.getElementById('rekart-btn-alternate');
+      if (btn) btn.disabled = true;
+    }
+    if (!settings.allowWeekly) {
+      const btn = document.getElementById('rekart-btn-weekly');
+      if (btn) btn.disabled = true;
+    }
+    if (!settings.allowNthDay) {
+      const btn = document.getElementById('rekart-btn-nth');
+      if (btn) btn.disabled = true;
+    }
+  }
+
+  // Pattern selection
+  document.querySelectorAll('.rekart-pattern-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      if (this.disabled) return;
+      document.querySelectorAll('.rekart-pattern-btn').forEach(b => b.classList.remove('active'));
+      this.classList.add('active');
+      currentPattern = this.dataset.pattern;
+      document.getElementById('rekart_pattern').value = currentPattern;
+      showPatternOptions(currentPattern);
+    });
+  });
+  // Set default pattern
+  document.getElementById('rekart_pattern').value = 'daily';
+
+  function showPatternOptions(pattern) {
+    document.getElementById('rekart-daily-options').style.display = 'none';
+    document.getElementById('rekart-weekly-options').style.display = 'none';
+    document.getElementById('rekart-nth-options').style.display = 'none';
+    if (pattern === 'daily' || pattern === 'alternate') {
+      document.getElementById('rekart-daily-options').style.display = 'block';
+    } else if (pattern === 'weekly') {
+      document.getElementById('rekart-weekly-options').style.display = 'block';
+    } else if (pattern === 'nth_day') {
+      document.getElementById('rekart-nth-options').style.display = 'block';
+      updateNthNote();
+    }
+  }
+
+  // Daily quantity
+  const qtyInput = document.getElementById('rekart-qty');
+  document.getElementById('rekart-qty-minus').addEventListener('click', () => {
+    if (qtyInput.value > 1) { qtyInput.value--; updateQty(); }
+  });
+  document.getElementById('rekart-qty-plus').addEventListener('click', () => {
+    if (qtyInput.value < 20) { qtyInput.value++; updateQty(); }
+  });
+  qtyInput?.addEventListener('change', updateQty);
+  function updateQty() {
+    document.getElementById('rekart_quantity_per_delivery').value = qtyInput.value;
+  }
+
+  // Weekly day checkboxes
+  document.querySelectorAll('.rekart-day-minus').forEach(btn => {
+    btn.addEventListener('click', function() {
+      const input = this.parentElement.querySelector('.rekart-day-qty-input');
+      if (input.value > 0) { input.value--; updateWeeklyDays(); }
+    });
+  });
+  document.querySelectorAll('.rekart-day-plus').forEach(btn => {
+    btn.addEventListener('click', function() {
+      const input = this.parentElement.querySelector('.rekart-day-qty-input');
+      if (input.value < 20) { input.value++; updateWeeklyDays(); }
+    });
+  });
+  document.querySelectorAll('.rekart-day-cb').forEach(cb => {
+    cb.addEventListener('change', updateWeeklyDays);
+  });
+  function updateWeeklyDays() {
+    const days = {};
+    document.querySelectorAll('.rekart-day-row').forEach(row => {
+      const cb = row.querySelector('.rekart-day-cb');
+      const qty = row.querySelector('.rekart-day-qty-input');
+      if (cb.checked) days[cb.dataset.day] = qty.value;
+    });
+    document.getElementById('rekart_weekly_days').value = JSON.stringify(days);
+  }
+  updateWeeklyDays();
+
+  // Nth Day
+  const nthSelect = document.getElementById('rekart-nth-interval');
+  nthSelect?.addEventListener('change', () => {
+    document.getElementById('rekart_nth_interval').value = nthSelect.value;
+    updateNthNote();
+  });
+  document.getElementById('rekart-nth-qty-minus')?.addEventListener('click', () => {
+    const i = document.getElementById('rekart-nth-qty');
+    if (i.value > 1) { i.value--; document.getElementById('rekart_quantity_per_delivery').value = i.value; }
+  });
+  document.getElementById('rekart-nth-qty-plus')?.addEventListener('click', () => {
+    const i = document.getElementById('rekart-nth-qty');
+    if (i.value < 20) { i.value++; document.getElementById('rekart_quantity_per_delivery').value = i.value; }
+  });
+  function updateNthNote() {
+    const interval = nthSelect?.value ?? 3;
+    const note = document.getElementById('rekart-nth-note');
+    if (note) note.textContent = `Note: Quantity on Day ${Number(interval)+1} will be same as Day 1`;
+  }
+  document.getElementById('rekart_nth_interval').value = nthSelect?.value ?? '3';
+
+  // Start date
+  dateInput?.addEventListener('change', function() {
+    document.getElementById('rekart_start_date').value = this.value;
+    if (selectedPlanId && plansData) {
+      const plan = plansData.plans.find(p => p.plan_id == selectedPlanId);
+      if (plan) updateEndDateNote(plan);
+    }
+  });
+
+  function updateEndDateNote(plan) {
+    const note = document.getElementById('rekart-end-date-note');
+    if (!note || !plan.units) return;
+    const start = new Date(dateInput.value);
+    if (isNaN(start.getTime())) return;
+    start.setDate(start.getDate() + Number(plan.units));
+    note.textContent = `Your subscription is expected to end on ${start.toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'})}`;
+    note.style.display = 'block';
+  }
+
+  // Delivery instructions
+  document.querySelectorAll('.rekart-instr').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const checked = Array.from(document.querySelectorAll('.rekart-instr:checked')).map(c => c.value);
+      document.getElementById('rekart_instructions').value = checked.join(',');
+    });
+  });
+
+})();
+</script>
+
+{%- endif -%}
+
+{% schema %}
+{ "name": "Rekart Subscriptions", "target": "section", "settings": [] }
+{% endschema %}

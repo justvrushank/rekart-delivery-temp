@@ -1,3 +1,29 @@
-.cache
-build
+# Build artifacts (regenerated in-image)
 node_modules
+build
+.cache
+
+# The Python backend is a separate build context (rekart-backend/Dockerfile)
+rekart-backend
+
+# Secrets & local env
+.env
+.env.*
+!.env.example
+!.env.docker.example
+
+# VCS / tooling / docs
+.git
+.gitignore
+.github
+.cursor
+.gemini
+.claude
+docs
+*.log
+shopify-dev.log
+
+# Editor / OS
+.DS_Store
+.vscode
+.idea

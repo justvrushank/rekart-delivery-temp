@@ -1,0 +1,59 @@
+# Full local stack for the Rekart Shopify connector.
+#
+#   Remix app        → http://localhost:3000   (embedded Shopify UI + receivers)
+#   PostgreSQL       → localhost:5432           (rekart_shopify)
+#
+# Copy .env.docker.example → .env, fill the secrets, then: docker compose up --build
+#
+# Note: the Remix app talks to the real Rekart (Laravel) backend via
+# REKART_BACKEND_URL (see docs/ARCHITECTURE.md); the FastAPI reference backend +
+# Celery worker + Redis broker are not part of this local stack.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rekart_shopify
+      POSTGRES_USER: ${POSTGRES_USER:-rekart}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rekart}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # POSTGRES_DB above creates the Remix app DB (rekart_shopify) on first init.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rekart} -d rekart_shopify"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      # Uses the canonical PostgreSQL schema (prisma/schema.prisma) — the image runs
+      # `prisma generate && prisma migrate deploy` on boot. (Local non-Docker dev
+      # uses the separate sqlite mirror prisma/schema.sqlite.prisma; see docs/DOCKER.md.)
+      DATABASE_URL: postgresql://${POSTGRES_USER:-rekart}:${POSTGRES_PASSWORD:-rekart}@db:5432/rekart_shopify
+      SHOPIFY_API_KEY: ${SHOPIFY_API_KEY}
+      SHOPIFY_API_SECRET: ${SHOPIFY_API_SECRET}
+      SHOPIFY_APP_URL: ${SHOPIFY_APP_URL}
+      SCOPES: ${SCOPES:-read_orders,read_customers,write_orders}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      REKART_BACKEND_URL: ${REKART_BACKEND_URL:-https://dev3.rekart.io}
+      REKART_LOGIN_URL: ${REKART_LOGIN_URL:-https://dev3.rekart.io}
+      REKART_STATIC_API_KEY: ${REKART_STATIC_API_KEY}
+    ports:
+      - "${APP_PORT:-3000}:3000"
+
+volumes:
+  postgres_data:

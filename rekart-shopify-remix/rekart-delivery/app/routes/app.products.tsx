@@ -27,6 +27,7 @@ import { getOnboarding } from "../onboarding.server";
 import {
   fetchRekartCatalog,
   pushProductMappings,
+  type ProductMappingItem,
   type RekartProduct,
 } from "../rekart.server";
 import {
@@ -35,6 +36,7 @@ import {
   type ShopifyProductInput,
 } from "../product-matching.server";
 import db from "../db.server";
+import { parseGidId, toGid } from "../gid";
 import { SkeletonSection } from "../skeleton";
 
 const PRODUCTS_QUERY = `#graphql
@@ -42,6 +44,7 @@ const PRODUCTS_QUERY = `#graphql
     products(first: 250) {
       edges {
         node {
+          id
           title
           variants(first: 100) {
             edges { node { id sku } }
@@ -57,6 +60,7 @@ interface ProductsQueryResult {
     products: {
       edges: Array<{
         node: {
+          id: string;
           title: string;
           variants: { edges: Array<{ node: { id: string; sku: string | null } }> };
         };
@@ -154,13 +158,6 @@ interface MetafieldsDeleteResult {
   };
 }
 
-// Shopify GraphQL returns variant ids as GIDs (gid://shopify/ProductVariant/123).
-// Rekart's mapping table stores plain numeric ids and the order webhook resolves
-// lines by plain numbers, so we strip the GID prefix wherever we persist/share it.
-function extractVariantId(gid: string): string {
-  return gid.split("/").pop() ?? gid;
-}
-
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
@@ -172,36 +169,60 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     where: { shopId: shop },
   });
 
-  // Only hit Rekart when an account is linked; fall back to an empty catalog.
-  // Fetch products from the catalog endpoint (X-API-Key auth), passing the stored
-  // cache_id; persist the returned cache_id when it changes. Track whether the
-  // call itself failed (vs. simply returned zero products) so the UI can show the
-  // right empty state.
+  // The Rekart catalog fetch and the Shopify products query are independent, so
+  // run them concurrently (the catalog call can take ~2.5s). Only hit Rekart when
+  // an account is linked; otherwise fall back to a "not fetched" result. Track
+  // whether the catalog call itself failed (vs. simply returned zero products) so
+  // the UI can show the right empty state.
+  const [catalog, resp] = await Promise.all([
+    onboarding?.rekartMerchantId
+      ? fetchRekartCatalog(shop, onboarding.rekartCacheId)
+      : Promise.resolve({ error: "FAILED" } as const),
+    admin.graphql(PRODUCTS_QUERY),
+  ]);
+
   let rekartProducts: RekartProduct[] = [];
   let catalogError = false;
   if (onboarding?.rekartMerchantId) {
-    const catalog = await fetchRekartCatalog(shop, onboarding.rekartCacheId);
     if ("error" in catalog) {
       catalogError = true;
     } else {
       rekartProducts = catalog.products;
-      if (catalog.cacheId && catalog.cacheId !== onboarding.rekartCacheId) {
-        await db.shopOnboarding.update({
-          where: { shop },
-          data: { rekartCacheId: catalog.cacheId },
-        });
-      }
+      // Persist catalog-derived shop metadata (currency/timezone/territory) plus
+      // the returned cache_id (only when it changed, so later calls short-circuit)
+      // in one update.
+      await db.shopOnboarding.update({
+        where: { shop },
+        data: {
+          rekartCurrency: catalog.currency ?? null,
+          rekartCurrencySymbol: catalog.currencySymbol ?? null,
+          rekartTimezone: catalog.timezone ?? null,
+          rekartTerritoryId: catalog.territoryId ?? null,
+          // Persist merchant subscription pattern toggles (served to the storefront
+          // widget via the app proxy at /apps/rekart/plans).
+          ...(catalog.settings
+            ? {
+                allowAlternateDay: catalog.settings.allow_alternate_day ?? true,
+                allowWeekly: catalog.settings.allow_weekly ?? true,
+                allowNthDay: catalog.settings.allow_nth_day ?? true,
+              }
+            : {}),
+          ...(catalog.cacheId && catalog.cacheId !== onboarding.rekartCacheId
+            ? { rekartCacheId: catalog.cacheId }
+            : {}),
+        },
+      });
     }
   }
 
-  // Fetch + flatten Shopify products to one row per variant.
-  const resp = await admin.graphql(PRODUCTS_QUERY);
+  // Flatten Shopify products to one row per variant.
   const json = (await resp.json()) as ProductsQueryResult;
   const shopifyProducts: ShopifyProductInput[] = (
     json.data?.products.edges ?? []
   ).flatMap((p) =>
     p.node.variants.edges.map((v) => ({
-      variantId: extractVariantId(v.node.id),
+      variantId: parseGidId(v.node.id),
+      productId: parseGidId(p.node.id),
       productTitle: p.node.title,
       sku: v.node.sku ?? null,
     })),
@@ -222,6 +243,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 const MappingSchema = z.array(
   z.object({
     shopifyVariantId: z.string().min(1),
+    shopifyProductId: z.string().min(1),
     shopifyProductTitle: z.string().min(1),
     shopifySkuCode: z.string().optional(),
     rekartProductId: z.number().int().positive(),
@@ -229,9 +251,18 @@ const MappingSchema = z.array(
   }),
 );
 
-// Variant ids (numeric) that were previously mapped and are now set to
-// "— Not mapped —": delete their ShopifyProductLink row + Shopify metafield.
-const UnmappedSchema = z.array(z.string().min(1));
+// Variants that were previously mapped and are now set to "— Not mapped —":
+// delete their ShopifyProductLink row + Shopify metafield, and forward them to
+// Rekart as action "unmapped". We carry the Shopify product context (id, title,
+// sku) so the unmapped row in the Rekart payload is as rich as a mapped one.
+const UnmappedSchema = z.array(
+  z.object({
+    shopifyVariantId: z.string().min(1),
+    shopifyProductId: z.string().min(1),
+    shopifyProductTitle: z.string().min(1),
+    shopifySkuCode: z.string().optional(),
+  }),
+);
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -301,7 +332,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   // Variants the merchant unmapped (previously saved, now "— Not mapped —").
-  let unmapped: string[] = [];
+  let unmapped: z.infer<typeof UnmappedSchema> = [];
   try {
     const unmappedResult = UnmappedSchema.safeParse(
       JSON.parse(String(formData.get("unmapped") ?? "[]")),
@@ -311,35 +342,37 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Malformed unmapped payload → treat as no unmaps (don't block the save).
   }
 
-  let savedCount = 0;
-  for (const m of result.data) {
-    // Store the plain numeric variant id (strip the GID prefix) so it matches
-    // what Pappu's order webhook looks up. Idempotent if already numeric.
-    const variantId = extractVariantId(m.shopifyVariantId);
-    await db.shopifyProductLink.upsert({
-      where: {
-        shopId_shopifyVariantId: {
+  // Upsert every confirmed mapping in ONE round trip instead of awaiting in a
+  // loop. Store the plain numeric variant id (strip the GID prefix) so it matches
+  // what the order webhook looks up. Idempotent if already numeric.
+  await db.$transaction(
+    result.data.map((m) => {
+      const variantId = parseGidId(m.shopifyVariantId);
+      return db.shopifyProductLink.upsert({
+        where: {
+          shopId_shopifyVariantId: {
+            shopId: session.shop,
+            shopifyVariantId: variantId,
+          },
+        },
+        create: {
           shopId: session.shop,
           shopifyVariantId: variantId,
+          shopifyProductTitle: m.shopifyProductTitle,
+          shopifySku: m.shopifySkuCode ?? null,
+          rekartProductId: m.rekartProductId,
+          matchedAuto: m.matchedAuto,
         },
-      },
-      create: {
-        shopId: session.shop,
-        shopifyVariantId: variantId,
-        shopifyProductTitle: m.shopifyProductTitle,
-        shopifySku: m.shopifySkuCode ?? null,
-        rekartProductId: m.rekartProductId,
-        matchedAuto: m.matchedAuto,
-      },
-      update: {
-        shopifyProductTitle: m.shopifyProductTitle,
-        shopifySku: m.shopifySkuCode ?? null,
-        rekartProductId: m.rekartProductId,
-        matchedAuto: m.matchedAuto,
-      },
-    });
-    savedCount += 1;
-  }
+        update: {
+          shopifyProductTitle: m.shopifyProductTitle,
+          shopifySku: m.shopifySkuCode ?? null,
+          rekartProductId: m.rekartProductId,
+          matchedAuto: m.matchedAuto,
+        },
+      });
+    }),
+  );
+  const savedCount = result.data.length;
 
   // Mirror the chosen Rekart product id onto each mapped Shopify variant as a
   // metafield (rekart.product_id), in ONE batched metafieldsSet call. Best-effort:
@@ -347,7 +380,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // we surface a warning instead.
   let metafieldWarning: string | null = null;
   const metafields = result.data.map((m) => ({
-    ownerId: `gid://shopify/ProductVariant/${extractVariantId(m.shopifyVariantId)}`,
+    ownerId: toGid("ProductVariant", parseGidId(m.shopifyVariantId)),
     namespace: "rekart",
     key: "product_id",
     type: "number_integer",
@@ -418,15 +451,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // is logged (pushProductMappings also logs internally) but never surfaced to
   // the merchant. Variant ids are sent in the plain numeric form used by the DB
   // and the order webhook.
+  // Push only the variants linked to a Rekart product. Per Rekart's contract,
+  // unmapped variants are NOT sent — the local row + metafield deletion below is
+  // all that's needed for those. Each row strips the GID prefix to the plain
+  // numeric variant id the order webhook resolves by.
+  // TODO: wire up create flow — when a variant needs a brand-new Rekart product,
+  // push a { shopifyVariantId, product: {...} } row instead of rekartProductId.
+  const pushMappings: ProductMappingItem[] = result.data.map((m) => ({
+    shopifyVariantId: parseGidId(m.shopifyVariantId),
+    rekartProductId: m.rekartProductId,
+  }));
+
   let mappingConflictWarning: string | null = null;
-  if (result.data.length > 0) {
-    const pushResult = await pushProductMappings(
-      session.shop,
-      result.data.map((m) => ({
-        shopifyVariantId: extractVariantId(m.shopifyVariantId),
-        rekartProductId: m.rekartProductId,
-      })),
-    );
+  if (pushMappings.length > 0) {
+    const pushResult = await pushProductMappings(session.shop, pushMappings);
     if ("error" in pushResult) {
       console.error(
         `[products] pushProductMappings to Rekart failed for ${session.shop}`,
@@ -448,14 +486,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // rekart.product_id metafield (chunked, 25/call) so it doesn't linger.
   let removedCount = 0;
   if (unmapped.length > 0) {
-    const ids = unmapped.map((v) => extractVariantId(v));
+    const ids = unmapped.map((u) => parseGidId(u.shopifyVariantId));
     const deleted = await db.shopifyProductLink.deleteMany({
       where: { shopId: session.shop, shopifyVariantId: { in: ids } },
     });
     removedCount = deleted.count;
 
     const identifiers = ids.map((id) => ({
-      ownerId: `gid://shopify/ProductVariant/${id}`,
+      ownerId: toGid("ProductVariant", id),
       namespace: "rekart",
       key: "product_id",
     }));
@@ -534,9 +572,13 @@ export default function Products() {
     return map;
   }, [existingMappings]);
 
-  // Selected Rekart product id per variant ("" = not mapped). Seed from saved
-  // mapping, then the auto-match suggestion.
-  const [selected, setSelected] = useState<Record<string, string>>(() => {
+  // Selected Rekart product id per variant ("" = not mapped). Split into:
+  //  - baseSelected: derived from loader data (saved mapping, then auto-match).
+  //    Recomputes when the loader revalidates ("Refresh catalog"), so newly
+  //    auto-matched variants surface instead of staying stuck at mount-time "".
+  //  - overrides: the merchant's in-progress edits, which survive a refresh.
+  // The effective `selected` is base with overrides layered on top.
+  const baseSelected = useMemo(() => {
     const initial: Record<string, string> = {};
     for (const row of autoMatches) {
       const saved = savedByVariant.get(row.shopifyVariantId);
@@ -547,7 +589,12 @@ export default function Products() {
           : "";
     }
     return initial;
-  });
+  }, [autoMatches, savedByVariant]);
+  const [overrides, setOverrides] = useState<Record<string, string>>({});
+  const selected = useMemo(
+    () => ({ ...baseSelected, ...overrides }),
+    [baseSelected, overrides],
+  );
   // Which matched rows have been switched into "edit" mode (show the picker).
   const [editing, setEditing] = useState<Record<string, boolean>>({});
   // Inline client-side validation error (e.g. duplicate Rekart product). Cleared
@@ -577,6 +624,7 @@ export default function Products() {
           String(row.rekartProductId) === value;
         return {
           shopifyVariantId: row.shopifyVariantId,
+          shopifyProductId: row.shopifyProductId,
           shopifyProductTitle: row.shopifyProductTitle,
           // omit when null so it satisfies the optional string schema
           shopifySkuCode: row.shopifySkuCode ?? undefined,
@@ -613,7 +661,12 @@ export default function Products() {
         const value = selected[row.shopifyVariantId] ?? "";
         return value === "" && savedByVariant.has(row.shopifyVariantId);
       })
-      .map((row) => row.shopifyVariantId);
+      .map((row) => ({
+        shopifyVariantId: row.shopifyVariantId,
+        shopifyProductId: row.shopifyProductId,
+        shopifyProductTitle: row.shopifyProductTitle,
+        shopifySkuCode: row.shopifySkuCode ?? undefined,
+      }));
 
     const data = new FormData();
     data.set("mappings", JSON.stringify(mappings));
@@ -631,7 +684,7 @@ export default function Products() {
         // the setState updater crashes ("Cannot read properties of null") because
         // React clears currentTarget after the handler returns. "" = Not mapped.
         const value = e.currentTarget?.value ?? "";
-        setSelected((prev) => ({ ...prev, [variantId]: value }));
+        setOverrides((prev) => ({ ...prev, [variantId]: value }));
       }}
     >
       <s-option value="">— Not mapped —</s-option>
@@ -756,16 +809,24 @@ export default function Products() {
 
       <s-section heading="Map your products">
           <s-stack direction="block" gap="base">
-            {/* One subtle helper line for the whole table (not per row). */}
-            <a
-              href="https://app.rekart.io"
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ fontSize: "0.75rem", color: "#6d7175" }}
-            >
-              Can't find a Rekart product to map to? Add products in your Rekart
-              Dashboard ↗
-            </a>
+            {/* One subtle helper line for the whole table (not per row), next to
+                a Refresh button so a just-added Rekart product can be pulled in
+                without a full page reload. */}
+            <s-stack direction="inline" gap="base" alignItems="center">
+              <a
+                href="https://app.rekart.io"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontSize: "0.75rem", color: "#6d7175" }}
+              >
+                Can't find a Rekart product to map to? Add products in your Rekart
+                Dashboard ↗
+              </a>
+              <s-button onClick={() => revalidate()}>Refresh catalog</s-button>
+            </s-stack>
+            <s-text color="subdued">
+              Added a new product in Rekart? Refresh to see it here.
+            </s-text>
             <s-table>
               <s-table-header-row>
                 <s-table-header>Shopify Product</s-table-header>
